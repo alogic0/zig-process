@@ -77,6 +77,47 @@ pub fn main(init: std.process.Init) !void {
             try io.sleep(.fromMilliseconds(1), .awake);
         }
         if (!linux.W.IFSIGNALED(@bitCast(status)) or linux.W.TERMSIG(@bitCast(status)) != .KILL) return error.DescendantNotKilled;
+    } else if (std.mem.eql(u8, mode, "capture-exit-test")) {
+        // Only this isolated fixture adopts the pipe-owning descendant.
+        if (linux.errno(linux.prctl(@backingInt(linux.PR.SET_CHILD_SUBREAPER), 1, 0, 0, 0)) != .SUCCESS) return error.SubreaperFailed;
+        var random: [12]u8 = undefined;
+        io.random(&random);
+        const root = try a.print("/tmp/process-capture-{s}", .{std.fmt.bytesToHex(random, .lower)});
+        try std.Io.Dir.cwd().createDir(io, root, .fromMode(0o700));
+        defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+        const hold = std.mem.eql(u8, args[2], "hold");
+        // The writer waits for the leader's zombie state, not a scheduling delay.
+        const script = try a.print(
+            "leader=$$; (while IFS= read -r state < /proc/$leader/stat; do case \"$state\" in *\") Z \"*) break;; esac; done; printf late; printf error >&2; {s}) & echo $! > descendant; exit 7",
+            .{if (hold) "exec /bin/sleep 30" else "exit 0"},
+        );
+        const result = try process.run(init.gpa, io, .{
+            .spawn = .{ .argv = &.{ "/bin/sh", "-c", script }, .cwd = .{ .path = root } },
+            .timeout_ms = if (hold) 500 else 3000,
+            .stdout_limit = 4,
+            .stderr_limit = 5,
+            .exit_policy = .drain_output,
+        });
+        defer result.deinit(init.gpa);
+        const bytes = try std.Io.Dir.cwd().readFileAlloc(io, try a.print("{s}/descendant", .{root}), a, .limited(64));
+        const descendant = try std.fmt.parseInt(i32, std.mem.trim(u8, bytes, "\n"), 10);
+        var joined = false;
+        defer if (!joined) {
+            _ = linux.kill(descendant, .KILL);
+            var status: i32 = 0;
+            while (linux.errno(linux.wait4(descendant, &status, 0, null)) == .INTR) {}
+        };
+        if (result.outcome != (if (hold) process.Outcome.timed_out else .completed) or result.term != .exited or result.term.exited != 7) return error.WrongCaptureOutcome;
+        if (!std.mem.eql(u8, result.stdout, "late") or !std.mem.eql(u8, result.stderr, "error")) return error.MissingLateOutput;
+        var status: i32 = 0;
+        while (true) {
+            const rc = linux.wait4(descendant, &status, 0, null);
+            if (linux.errno(rc) == .INTR) continue;
+            if (linux.errno(rc) != .SUCCESS or rc != descendant) return error.DescendantWaitFailed;
+            joined = true;
+            break;
+        }
+        if (hold and (!linux.W.IFSIGNALED(@bitCast(status)) or linux.W.TERMSIG(@bitCast(status)) != .KILL)) return error.DescendantNotKilled;
     } else if (std.mem.eql(u8, mode, "closed-stdio-test")) {
         const exe = try std.process.executablePathAlloc(io, a);
         _ = linux.close(0);

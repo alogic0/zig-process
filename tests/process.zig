@@ -302,6 +302,15 @@ test "std Io cancellation joins command and preserves low-level wait ownership" 
     _ = try child.stop(0);
 }
 
+test "drain output after leader exit preserves late bytes and bounds held pipes" {
+    for ([_][]const u8{ "release", "hold" }) |mode| {
+        const result = try p.run(t.allocator, t.io, .{ .spawn = .{ .argv = &.{ fixture, "capture-exit-test", mode } }, .timeout_ms = 5000 });
+        defer result.deinit(t.allocator);
+        if (!result.success()) std.debug.print("capture helper {s}: {s}\n", .{ mode, result.stderr });
+        try t.expect(result.success());
+    }
+}
+
 test "concurrent independent command owners preserve separate results" {
     var first = try t.io.concurrent(p.run, .{ t.allocator, t.io, p.RunOptions{ .spawn = .{ .argv = &.{ fixture, "exact", "70000" } } } });
     defer {

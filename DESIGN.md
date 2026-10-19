@@ -78,6 +78,12 @@ only the allowed prefix. Storage is allocated before launch; output flooding
 cannot grow it. Per-tick reads are bounded so one stream cannot starve its peer
 or cancellation checks. EOF and child exit are separate conditions.
 
+Capture defaults to terminating the owned group when its leader exits. The
+optional `exit_policy = .drain_output` retains the unreaped leader and drains
+descendant output until both streams close, bounded by the original deadline,
+cancellation and output limits. This supports command consumers which require
+EOF before completion without changing other callers' cleanup policy.
+
 Results distinguish completed termination, timeout, cancellation and output
 limit. Nonzero exit and signals are ordinary termination results. Setup/launch,
 allocation and unexpected I/O failures are errors and still clean all owned

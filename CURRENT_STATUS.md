@@ -1,5 +1,19 @@
 # Current delivery
 
+October 19 consumer prerequisite: optional `run.exit_policy = .drain_output`
+preserves output written after the leader exits, with the leader retained until
+EOF or bounded timeout/cancellation/overflow cleanup. The existing default still
+terminates the group on leader exit. This supports the authorized zg-backend
+command integration without adding backend policy to the package.
+
+`zig build test check --summary all` and the same command with
+`-Doptimize=ReleaseSafe` pass 14/14 tests and 8/8 build steps. The new isolated
+subreaper fixture requires a descendant to observe the leader's zombie state
+before writing both streams, and checks a held-open-pipe timeout preserves the
+leader's exit code and kills/reaps the descendant. Consumer acceptance belongs
+to zg-backend's own checks. The original standalone completion below retains
+its original 13-test scope.
+
 Standalone library requested October 19, 2026. Scope: owned Linux process API,
 bounded command runner, documentation and reusable native fixtures. No consumer migration.
 

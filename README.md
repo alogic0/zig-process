@@ -77,6 +77,12 @@ exactly once. Neither output exceeds its configured limit.
 Use a reclaiming allocator for repeated `run` calls. A long-lived arena retains
 temporary capture buffers until it is reset, even after Result.deinit.
 
+By default, leader exit terminates the owned group before draining its remaining
+buffered output. Set `.exit_policy = .drain_output` to allow descendants to finish
+writing until both streams reach EOF. The leader stays unreaped until then;
+the same deadline, cancellation and output limits still apply. A held-open pipe
+times out and triggers group cleanup, retaining the leader's original exit status.
+
 Keep `spawn.stdout` and `spawn.stderr` at their default `.ignore` with `run`;
 it installs its own pipes. Stdin can be ignored, inherited or a borrowed file.
 For interactive stdin or other redirection, use `Child`.

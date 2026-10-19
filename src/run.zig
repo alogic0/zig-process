@@ -8,6 +8,9 @@ pub const Options = struct {
     timeout_ms: u32 = 30_000,
     stdout_limit: usize = 1024 * 1024,
     stderr_limit: usize = 1024 * 1024,
+    /// Keep the exited leader owned while descendants finish writing. The same
+    /// deadline, cancellation and output limits still bound draining.
+    exit_policy: enum { terminate_group, drain_output } = .terminate_group,
 };
 pub const Outcome = enum { completed, timed_out, canceled, output_limit };
 pub const Result = struct {
@@ -58,7 +61,8 @@ pub fn run(a: std.mem.Allocator, io: std.Io, options: Options) !Result {
             break;
         }
         if (try child.poll() != null) {
-            _ = try child.finish();
+            if (options.exit_policy == .terminate_group or (capture[0].eof and capture[1].eof))
+                _ = try child.finish();
             if (capture[0].eof and capture[1].eof) break;
         }
         io.sleep(.fromMilliseconds(1), .awake) catch {
