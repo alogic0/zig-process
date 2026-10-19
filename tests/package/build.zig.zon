@@ -1,0 +1,8 @@
+.{
+    .name = .process_consumer_test,
+    .fingerprint = 0x85253bd3badf8422,
+    .version = "0.0.0",
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{ .process = .{ .path = "../.." } },
+    .paths = .{ "build.zig", "build.zig.zon", "main.zig" },
+}

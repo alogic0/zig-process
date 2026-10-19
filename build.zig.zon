@@ -1,0 +1,8 @@
+.{
+    .name = .process,
+    .fingerprint = 0x861d1896a8d87406,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{},
+    .paths = .{ "build.zig", "build.zig.zon", ".zigversion", "src", "tests", "examples", "README.md", "DESIGN.md", "CURRENT_STATUS.md", "AGENTS.md" },
+}
