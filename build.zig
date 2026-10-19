@@ -15,11 +15,19 @@ pub fn build(b: *std.Build) void {
     const tests_mod = b.createModule(.{ .root_source_file = b.path("tests/process.zig"), .target = target, .optimize = optimize });
     tests_mod.addImport("process", mod);
     tests_mod.addOptions("test_options", options);
-    const tests = b.addTest(.{ .root_module = tests_mod, .filters = if (b.option([]const u8, "test-filter", "Run matching tests")) |f| &.{f} else &.{} });
+    const test_filter = b.option([]const u8, "test-filter", "Run matching tests");
+    const tests = b.addTest(.{ .root_module = tests_mod, .filters = if (test_filter) |f| &.{f} else &.{} });
     const run_tests = b.addRunArtifact(tests);
-    b.step("test", "Run native process acceptance cases").dependOn(&run_tests.step);
+    const report_tests_mod = b.createModule(.{ .root_source_file = b.path("src/run.zig"), .target = target, .optimize = optimize });
+    report_tests_mod.addOptions("test_options", options);
+    const report_tests = b.addTest(.{ .root_module = report_tests_mod, .filters = if (test_filter) |f| &.{f} else &.{} });
+    const run_report_tests = b.addRunArtifact(report_tests);
+    const test_step = b.step("test", "Run native process acceptance cases");
+    test_step.dependOn(&run_tests.step);
+    test_step.dependOn(&run_report_tests.step);
     const check = b.step("check", "Compile tests and examples");
     check.dependOn(&tests.step);
+    check.dependOn(&report_tests.step);
     inline for (.{ "capture", "poll" }) |name| {
         const example = b.addExecutable(.{ .name = "process-" ++ name, .root_module = b.createModule(.{ .root_source_file = b.path("examples/" ++ name ++ ".zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "process", .module = mod }} }) });
         b.installArtifact(example);

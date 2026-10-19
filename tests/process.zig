@@ -329,3 +329,81 @@ test "concurrent independent command owners preserve separate results" {
     try t.expectEqual(@as(u8, 7), b.term.exited);
     try t.expectEqualStrings("second", b.stdout);
 }
+
+test "report owns success launch failures and pre-launch cancellation" {
+    const success = try p.runReport(t.allocator, t.io, .{ .spawn = .{ .argv = &.{ "/bin/echo", "report" } } });
+    defer success.deinit(t.allocator);
+    try t.expect(success.success());
+    try t.expectEqualStrings("report\n", success.stdout);
+    try t.expectEqual(@as(u8, 0), success.term.?.exited);
+    const nonzero = try p.runReport(t.allocator, t.io, .{ .spawn = .{ .argv = &.{ fixture, "echo", "nonzero" } } });
+    defer nonzero.deinit(t.allocator);
+    try t.expect(nonzero.outcome == .completed);
+    try t.expectEqual(@as(u8, 7), nonzero.term.?.exited);
+    try t.expect(!nonzero.success());
+
+    const missing = try p.runReport(t.allocator, t.io, .{ .spawn = .{ .argv = &.{"/this-report-executable-does-not-exist"} } });
+    defer missing.deinit(t.allocator);
+    try t.expect(missing.outcome == .failed);
+    try t.expectEqual(p.FailurePhase.launch, missing.outcome.failed.phase);
+    try t.expectEqual(error.FileNotFound, missing.outcome.failed.cause);
+    try t.expect(missing.term == null and missing.cleanup_failure == null);
+    try t.expectEqual(@as(usize, 0), missing.stdout.len);
+    try t.expectEqual(@as(usize, 0), missing.stderr.len);
+    try t.expect(!missing.success());
+
+    var flag: p.Cancellation = .{};
+    flag.request();
+    const canceled = try p.runReport(t.allocator, t.io, .{ .spawn = .{ .argv = &.{fixture}, .cancellation = &flag } });
+    defer canceled.deinit(t.allocator);
+    try t.expect(canceled.outcome == .failed);
+    try t.expectEqual(p.FailurePhase.launch, canceled.outcome.failed.phase);
+    try t.expectEqual(error.Canceled, canceled.outcome.failed.cause);
+    try t.expect(canceled.term == null);
+    try t.expect(!canceled.success());
+    try t.expectError(error.InvalidOptions, p.runReport(t.allocator, t.io, .{ .spawn = .{ .argv = &.{} } }));
+    try t.expectError(error.InvalidOptions, p.runReport(t.allocator, t.io, .{ .spawn = .{ .argv = &.{fixture}, .stdin = .pipe } }));
+}
+
+test "report retains timeout output and exact zero output limits" {
+    const timeout = try p.runReport(t.allocator, t.io, .{ .spawn = .{ .argv = &.{ fixture, "closed" } }, .timeout_ms = 100 });
+    defer timeout.deinit(t.allocator);
+    try t.expect(timeout.outcome == .timed_out);
+    try t.expectEqualStrings("ready\n", timeout.stdout);
+    try t.expect(timeout.term != null and timeout.cleanup_failure == null);
+    try t.expect(!timeout.success());
+    for ([_]usize{ 0, 5 }) |limit| {
+        const report = try p.runReport(t.allocator, t.io, .{ .spawn = .{ .argv = &.{ fixture, "exact", "5" } }, .stdout_limit = limit, .stderr_limit = limit });
+        defer report.deinit(t.allocator);
+        try t.expect(report.stdout.len <= limit and report.stderr.len <= limit);
+        try t.expect(report.cleanup_failure == null);
+        if (limit == 0) {
+            try t.expect(report.outcome == .output_limit);
+            try t.expect(!report.success());
+        } else {
+            try t.expect(report.success());
+            try t.expectEqual(limit, report.stdout.len);
+            try t.expectEqual(limit, report.stderr.len);
+        }
+    }
+}
+
+fn reportAllocationCase(a: std.mem.Allocator) !void {
+    var fixed: NonResizing = .{ .parent = a };
+    const allocator = fixed.allocator();
+    const report = try p.runReport(allocator, t.io, .{ .spawn = .{ .argv = &.{ fixture, "echo", "report" } }, .stdout_limit = 20, .stderr_limit = 20 });
+    defer report.deinit(allocator);
+    try t.expect(report.outcome == .completed);
+}
+
+test "report allocation failures release successful capture buffers and descriptors" {
+    try reportAllocationCase(t.allocator);
+    const before = try fdCount();
+    const before_children = try children();
+    defer t.allocator.free(before_children);
+    try t.checkAllAllocationFailures(t.allocator, reportAllocationCase, .{});
+    try t.expectEqual(before, try fdCount());
+    const after_children = try children();
+    defer t.allocator.free(after_children);
+    try t.expectEqualStrings(before_children, after_children);
+}

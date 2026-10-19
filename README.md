@@ -1,7 +1,7 @@
 # zig-process
 
 Owned Linux child processes and bounded command capture for Zig **0.17.0**.
-Standalone package, version 0.1.0, with no external dependencies.
+Standalone package, version 0.2.0, with no external dependencies.
 
 Designed from Zeta, zg-backend and Paneva's process-management requirements.
 See [DESIGN.md](DESIGN.md) for ownership decisions, source revisions and consumer
@@ -86,6 +86,46 @@ times out and triggers group cleanup, retaining the leader's original exit statu
 Keep `spawn.stdout` and `spawn.stderr` at their default `.ignore` with `run`;
 it installs its own pipes. Stdin can be ignored, inherited or a borrowed file.
 For interactive stdin or other redirection, use `Child`.
+
+## Partial output on failure
+
+Use `runReport` when diagnostics must survive launch or supervision errors:
+
+```zig
+const report = try process.runReport(allocator, io, .{
+    .spawn = .{ .argv = &.{ "/path/to/command", "argument" } },
+    .timeout_ms = 10_000,
+    .stdout_limit = 1024 * 1024,
+    .stderr_limit = 64 * 1024,
+});
+defer report.deinit(allocator);
+
+switch (report.outcome) {
+    .failed => |failure| {
+        // failure.phase: launch, stdout, stderr, poll, or finish.
+        // failure.cause: the original error.
+        // report.stdout and report.stderr retain already captured bytes.
+        _ = failure;
+    },
+    else => {},
+}
+```
+
+`ReportOutcome` has the four ordinary outcomes plus `failed: Failure`. Launch
+failures, including pre-launch cancellation/timeout, carry phase `launch` and no
+termination. Post-launch failures retain bounded captured output and any known
+observed/cleanup termination. `term` is optional; an unavailable status is null.
+Only completed exit zero with no cleanup failure is `success()`.
+
+`cleanup_failure` records an error from stopping the child without replacing the
+primary outcome or failure. Final force cleanup and descriptor closure are still
+attempted before returning. `deinit` releases both output buffers exactly once.
+Invalid options and allocation failures return errors; OOM cannot promise a
+report. Output ownership transfers only when `runReport` returns successfully.
+
+Both APIs share the same capture and child ownership implementation. `run`
+continues to return launch/supervision failures as errors; choose `runReport`
+when their partial output is needed.
 
 ## Long-lived children and UI polling
 

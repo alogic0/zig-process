@@ -1,5 +1,35 @@
 # Current delivery
 
+## v0.2 owned failure reports, October 19, 2026
+
+`runReport` adds owned partial stdout/stderr for launch and supervision failures,
+with the original error and phase, optional observed/cleanup termination, and a
+separate secondary cleanup error. Validation/OOM remain returned errors. Existing
+`run` uses the same capture core and preserves its returned-error API.
+
+Acceptance covers binary output before deterministic stdout/stderr/poll/finish
+failures, primary/secondary error preservation, exact-child reaping, descriptor
+closure, allocation failures while copying partial and successful output, normal
+completion, timeout/limits, launch failure/cancellation, and package import.
+
+| Check | Result |
+| --- | --- |
+| `zig build test check run-capture run-poll --summary all` | 20/20 tests, both examples ran, 14/14 build steps |
+| Same command with `-Doptimize=ReleaseSafe` | 20/20 tests, both examples ran, 14/14 build steps |
+| `zig build test --summary all` in tests/package, Debug and ReleaseSafe | Both APIs imported/executed, 3/3 steps in each mode |
+| `zig fmt --check build.zig build.zig.zon src tests examples` | Passed |
+| `git diff --check` and staged review | Passed |
+
+The 20 tests comprise 17 public acceptance cases and three private capture-unit
+cases. Fault substitution occurs only after both fixture streams are captured;
+the finish case retains the natural exit code. A failed stop preserves its
+secondary error while final teardown kills/reaps the fixture. Failure injection
+also covers every allocator failure while publishing partial output. PID probes,
+exact-child waits, stable descriptor counts, and the testing allocator verify
+ownership. Consumer adoption remains a separate change.
+
+## v0.1 output draining
+
 October 19 consumer prerequisite: optional `run.exit_policy = .drain_output`
 preserves output written after the leader exits, with the leader retained until
 EOF or bounded timeout/cancellation/overflow cleanup. The existing default still

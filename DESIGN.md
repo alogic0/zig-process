@@ -95,6 +95,35 @@ Neither run nor Child installs handlers or changes the parent's cwd/environment.
 Hosts translate signals, UI Stop, or interpreter budgets into the cancellation
 flag; std.Io cancellation is also honored. Signal/timeout cleanup precedes return.
 
+## Owned failure reports (v0.2)
+
+Add `runReport` alongside `run`. A Report owns bounded stdout/stderr on ordinary
+completion, interruption, launch failure, and post-launch supervision failure.
+Its outcome is completed, timed_out, canceled, output_limit, or failed with a
+Failure containing the original error and phase (launch, stdout, stderr, poll,
+or finish). Validation and allocation failures remain returned errors; OOM does
+not promise an allocated report. Pre-launch cancellation/timeout are launch-phase
+failures, preserving the distinction from an interrupted running child.
+
+Report.term is optional: it contains observed or cleanup termination when known,
+and is null when no termination is available. An interrupted command's cleanup
+signal must not be presented as successful completion. Report.success requires
+completed, exit zero, and no cleanup failure. Report.deinit releases both output
+buffers exactly once with the original allocator.
+
+An operation failure remains primary when forced cleanup also fails. Preserve
+that secondary error in Report.cleanup_failure. Attempt the normal exact-child
+stop, then always run final Child.deinit before returning a report or allocating
+its output copies. The final owner closes all descriptors and attempts force
+cleanup; missing status remains explicit rather than fabricated. No library
+operation reaps an unrelated child or adds process-wide policy.
+
+The two APIs share one capture/ownership implementation. run converts failures
+back to returned errors before allocating result copies, preserving its existing
+error behavior. runReport returns the owned report. Private syscall-operation
+substitution in unit tests injects deterministic read, observation, finish, and
+cleanup failures after fixture output; there are no public fault-injection knobs.
+
 ## Consumer integration boundaries
 
 | Consumer | Shared mechanisms | Remains local |

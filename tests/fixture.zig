@@ -30,6 +30,11 @@ pub fn main(init: std.process.Init) !void {
         try std.Io.File.stdout().writeStreamingAll(io, buffer[0..n]);
     } else if (std.mem.eql(u8, mode, "signal")) {
         _ = linux.kill(linux.getpid(), .TERM);
+    } else if (std.mem.eql(u8, mode, "report")) {
+        try std.Io.File.stdout().writeStreamingAll(io, "out\x00\xff");
+        try std.Io.File.stderr().writeStreamingAll(io, "err\xfe");
+        if (std.mem.eql(u8, args[2], "exit")) std.process.exit(7);
+        try io.sleep(.fromSeconds(30), .awake);
     } else if (std.mem.eql(u8, mode, "sleep") or std.mem.eql(u8, mode, "closed") or std.mem.eql(u8, mode, "ignore")) {
         if (std.mem.eql(u8, mode, "ignore")) {
             const action: linux.Sigaction = .{ .handler = .{ .handler = linux.SIG.IGN }, .mask = linux.sigemptyset(), .flags = 0 };
