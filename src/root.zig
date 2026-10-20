@@ -5,6 +5,7 @@ pub const Stream = @import("types.zig").Stream;
 pub const Group = @import("types.zig").Group;
 pub const Cancellation = @import("types.zig").Cancellation;
 pub const RunOptions = @import("run.zig").Options;
+pub const CaptureAllocation = @import("run.zig").CaptureAllocation;
 pub const Result = @import("run.zig").Result;
 pub const Outcome = @import("run.zig").Outcome;
 pub const run = @import("run.zig").run;

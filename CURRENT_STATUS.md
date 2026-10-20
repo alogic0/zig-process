@@ -1,5 +1,63 @@
 # Current delivery
 
+## v0.4 capture allocation for host tools, October 20, 2026
+
+Execution brief: remove full-limit capture reservation from ordinary commands.
+HL2 host tooling at `2e4824a73cb39201d04006a83a38830709e7d677` permits
+512 MiB stdout and 8 MiB stderr even for small version/Git commands. Library
+baseline `f0f3073` reserves those limits before launch. Grow bounded buffers with
+actual output by default; retain explicit preallocation for callers that need
+capture storage reserved before spawning.
+
+Outcome: shader/build diagnostics and archive inspection can keep generous hard
+limits without reserving hundreds of MiB for every command. Existing backend
+import/recovery command results and partial-error diagnostics remain compatible.
+This changes library capture allocation, not consumer policy or source code.
+
+Finite cases: high limits with small/empty output under a small allocator budget;
+growth across chunks; binary and exact/overflow/zero limits in both modes;
+allocation failure during live capture and result publication; exact-child and
+descriptor cleanup; existing cancellation/deadline/drain/failure reports; package
+use and host-tool compatibility. Reuse native fixtures and allocation-failure
+checks, add only memory/growth controls. No Python tools, consumer migrations,
+graphics runs, streaming callback API or descendant supervisor in this slice.
+
+Exit: focused and full Debug/ReleaseSafe library checks, examples and package
+consumer; isolated consumer checks; format/diff/staged review and a committed
+valid slice.
+
+Implemented as v0.4.0: `.capture_allocation = .grow` is the default; explicit
+`.preallocate` reserves the two limits before spawn. Buffers grow only for bytes
+actually read and retained, never beyond their stream limit. OOM during growth
+remains a returned error after child/descriptor/buffer cleanup. Result buffers
+remain independent allocations; the limits do not describe total peak RSS.
+
+| Check | Result |
+| --- | --- |
+| `zig build test check --summary all`, Debug | 27/27 tests, 11/11 steps |
+| `zig build test check run-capture run-poll run-lifecycle --summary all`, both profiles | 17/17 steps; Debug reused the passing tests, ReleaseSafe ran 27/27; three examples ran in each |
+| `zig build test --summary all` in tests/package, both profiles | Both capture allocation modes and existing public APIs pass, 3/3 steps each |
+| Backend `zig test --test-filter 'shared command'` with the library module, both profiles | 3/3 existing tests each: environment/results/allocation balance, actual 64 MiB/16 MiB boundaries, late output and cancellation |
+| Temporary HL2 capture comparison, both profiles | Original Context.run and runReport match all bytes for Zig version (7), Git revision (41), and glslc package tar output (204800) |
+| Zig format and whitespace checks | Passed |
+
+The 27 tests comprise 23 public cases and four private capture cases. New checks
+prove that 512 MiB/8 MiB caps with empty or small output fit a 128 KiB allocator;
+both modes preserve exact/zero/binary/overflow boundaries; and forced allocation
+failure after a live child's stdout or stderr passes 8 KiB leaves unchanged
+descriptor/child inventories. Existing exhaustive allocation-failure tests also
+cover launch and publication of successful and failed captures.
+
+The HL2 probe copied the original common/resource-report modules into a temporary
+directory and compared them against the shared library. Its package command was
+`dpkg-deb --fsys-tarfile .tools/vulkan/packages/glslc_2023.8-1build1_amd64.deb`;
+the 204800 output bytes have SHA-256
+`3ac8c7c428a5b281fd5a7725b03d4caa762281d3a5b233971d7d747c83855b3f`.
+Temporary sources/outputs were removed. Backend checks used the concurrent
+working tree at `1c5e553f50f7a945882df10caa02e3d6228800fc`, without building or
+starting its services. Neither consumer's sources were changed. Full HL2
+workflow/shader qualification and consumer migrations remain separate.
+
 ## v0.3 bounded child observation, October 20, 2026
 
 Execution brief: add timed, non-reaping observation and deadline/token-aware

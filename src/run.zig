@@ -3,11 +3,15 @@ const Child = @import("child.zig");
 const T = @import("types.zig");
 const linux = std.os.linux;
 
+pub const CaptureAllocation = enum { grow, preallocate };
 pub const Options = struct {
     spawn: T.SpawnOptions,
     timeout_ms: u32 = 30_000,
     stdout_limit: usize = 1024 * 1024,
     stderr_limit: usize = 1024 * 1024,
+    /// Grow with actual output, or reserve both capture limits before launch.
+    /// Limits remain hard bounds in either mode. Results are allocated separately.
+    capture_allocation: CaptureAllocation = .grow,
     /// Keep the exited leader owned while descendants finish writing. The same
     /// deadline, cancellation and output limits still bound draining.
     exit_policy: enum { terminate_group, drain_output } = .terminate_group,
@@ -73,7 +77,7 @@ pub fn run(a: std.mem.Allocator, io: std.Io, options: Options) !Result {
         .failed => |failure| return failure.cause,
     };
     if (captured.cleanup_failure) |err| return err;
-    const output = try captured.copyOutput(a, options);
+    const output = try captured.copyOutput(a);
     return .{ .outcome = outcome, .term = captured.term.?, .stdout = output[0], .stderr = output[1] };
 }
 
@@ -87,7 +91,7 @@ pub fn runReport(a: std.mem.Allocator, io: std.Io, options: Options) !Report {
 fn reportWith(a: std.mem.Allocator, io: std.Io, options: Options, ops: anytype) !Report {
     const captured = try captureWith(a, io, options, ops);
     defer captured.deinit(a);
-    const output = try captured.copyOutput(a, options);
+    const output = try captured.copyOutput(a);
     return .{ .outcome = captured.outcome, .term = captured.term, .stdout = output[0], .stderr = output[1], .cleanup_failure = captured.cleanup_failure };
 }
 
@@ -103,21 +107,21 @@ const Captured = struct {
     fn deinit(self: Captured, a: std.mem.Allocator) void {
         for (self.streams) |stream| a.free(stream.bytes);
     }
-    fn copyOutput(self: Captured, a: std.mem.Allocator, options: Options) ![2][]u8 {
-        const stdout = try a.dupe(u8, self.streams[0].bytes[0..@min(self.streams[0].len, options.stdout_limit)]);
+    fn copyOutput(self: Captured, a: std.mem.Allocator) ![2][]u8 {
+        const stdout = try a.dupe(u8, self.streams[0].bytes[0..self.streams[0].len]);
         errdefer a.free(stdout);
-        return .{ stdout, try a.dupe(u8, self.streams[1].bytes[0..@min(self.streams[1].len, options.stderr_limit)]) };
+        return .{ stdout, try a.dupe(u8, self.streams[1].bytes[0..self.streams[1].len]) };
     }
 };
 
 fn captureWith(a: std.mem.Allocator, io: std.Io, options: Options, ops: anytype) !Captured {
     if (options.timeout_ms == 0 or options.spawn.launch_timeout_ms == 0 or options.spawn.stdin == .pipe or options.spawn.stdout != .ignore or options.spawn.stderr != .ignore or options.stdout_limit == std.math.maxInt(usize) or options.stderr_limit == std.math.maxInt(usize)) return error.InvalidOptions;
     const end = T.deadline(io, options.timeout_ms);
-    const out = try a.alloc(u8, options.stdout_limit + 1);
-    errdefer a.free(out);
-    const err = try a.alloc(u8, options.stderr_limit + 1);
-    errdefer a.free(err);
-    var captured: Captured = .{ .streams = .{ .{ .bytes = out }, .{ .bytes = err } } };
+    var captured: Captured = .{ .streams = .{ .{ .limit = options.stdout_limit }, .{ .limit = options.stderr_limit } } };
+    errdefer captured.deinit(a);
+    if (options.capture_allocation == .preallocate) {
+        for (&captured.streams) |*stream| stream.bytes = try a.alloc(u8, stream.limit);
+    }
     var spawn = options.spawn;
     spawn.stdout = .pipe;
     spawn.stderr = .pipe;
@@ -137,11 +141,13 @@ fn captureWith(a: std.mem.Allocator, io: std.Io, options: Options, ops: anytype)
             captured.outcome = .timed_out;
             break;
         }
-        const out_full = captured.streams[0].drain(child.stdout.?.handle, ops) catch |cause| {
+        const out_full = captured.streams[0].drain(a, child.stdout.?.handle, ops) catch |cause| {
+            if (cause == error.OutOfMemory) return cause;
             captured.fail(.stdout, cause);
             break;
         };
-        const err_full = captured.streams[1].drain(child.stderr.?.handle, ops) catch |cause| {
+        const err_full = captured.streams[1].drain(a, child.stderr.?.handle, ops) catch |cause| {
+            if (cause == error.OutOfMemory) return cause;
             captured.fail(.stderr, cause);
             break;
         };
@@ -202,22 +208,33 @@ const System = struct {
 };
 
 const Capture = struct {
-    bytes: []u8,
+    bytes: []u8 = &.{},
+    limit: usize,
     len: usize = 0,
     eof: bool = false,
-    fn drain(self: *Capture, fd: linux.fd_t, ops: anytype) !bool {
+    fn drain(self: *Capture, a: std.mem.Allocator, fd: linux.fd_t, ops: anytype) !bool {
         if (self.eof) return false;
+        // Read before growing: empty streams and repeated AGAIN/EOF do not
+        // allocate. One extra byte detects overflow without retaining it.
+        var buffer: [8192]u8 = undefined;
         // Per-stream work is bounded even when a child continually refills it.
         for (0..16) |_| {
-            const dest = self.bytes[self.len..@min(self.bytes.len, self.len +| 8192)];
-            switch (try ops.read(fd, dest)) {
+            const remaining = self.limit - self.len;
+            switch (try ops.read(fd, buffer[0..@min(buffer.len, remaining + 1)])) {
                 .bytes => |n| {
                     if (n == 0) {
                         self.eof = true;
                         return false;
                     }
-                    self.len += n;
-                    if (self.len == self.bytes.len) return true;
+                    const kept = @min(n, remaining);
+                    const required = self.len + kept;
+                    if (required > self.bytes.len) {
+                        const grown = @max(@as(usize, 8192), self.bytes.len +| (self.bytes.len / 2));
+                        self.bytes = try a.realloc(self.bytes, @min(self.limit, @max(required, grown)));
+                    }
+                    @memcpy(self.bytes[self.len..required], buffer[0..kept]);
+                    self.len = required;
+                    if (n > remaining) return true;
                 },
                 .again => return false,
                 .interrupted => continue,
@@ -366,4 +383,73 @@ test "report allocation failure after partial capture leaves no owned child or d
     const before = try fdCount();
     try std.testing.checkAllAllocationFailures(std.testing.allocator, allocationCase, .{});
     try std.testing.expectEqual(before, try fdCount());
+}
+
+// Fail a real buffer growth only after a real child has supplied more than one
+// chunk on the selected stream. Launch allocations cannot trigger this control.
+const GrowthOom = struct {
+    stream: usize,
+    stdout_fd: ?linux.fd_t = null,
+    lengths: [2]usize = .{ 0, 0 },
+    armed: bool = false,
+    failed: bool = false,
+    system: System = .{},
+
+    fn allocator(self: *GrowthOom) std.mem.Allocator {
+        return .{ .ptr = self, .vtable = &.{ .alloc = alloc, .resize = std.mem.Allocator.noResize, .remap = std.mem.Allocator.noRemap, .free = free } };
+    }
+    fn alloc(ptr: *anyopaque, len: usize, alignment: std.mem.Alignment, ra: usize) ?[*]u8 {
+        const self: *GrowthOom = @ptrCast(@alignCast(ptr));
+        if (self.armed) {
+            self.failed = true;
+            return null;
+        }
+        return std.testing.allocator.rawAlloc(len, alignment, ra);
+    }
+    fn free(_: *anyopaque, bytes: []u8, alignment: std.mem.Alignment, ra: usize) void {
+        std.testing.allocator.rawFree(bytes, alignment, ra);
+    }
+    fn read(self: *GrowthOom, fd: linux.fd_t, dest: []u8) !Read {
+        if (self.stdout_fd == null) self.stdout_fd = fd;
+        const index: usize = if (fd == self.stdout_fd.?) 0 else 1;
+        const result = try self.system.read(fd, dest);
+        if (result == .bytes) self.lengths[index] += result.bytes;
+        self.armed = self.lengths[self.stream] > 8192;
+        return result;
+    }
+    fn poll(self: *GrowthOom, child: *Child) !?Child.Term {
+        return self.system.poll(child);
+    }
+    fn finish(self: *GrowthOom, child: *Child) !Child.Term {
+        return self.system.finish(child);
+    }
+    fn stop(self: *GrowthOom, child: *Child) !Child.Term {
+        return self.system.stop(child);
+    }
+};
+
+fn ownedChildren() ![]u8 {
+    var buffer: [96]u8 = undefined;
+    const path = try std.fmt.bufPrint(&buffer, "/proc/self/task/{d}/children", .{linux.gettid()});
+    return std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, std.testing.allocator, .limited(65536));
+}
+
+test "allocation failure while growing either live stream reaps child and closes descriptors" {
+    const config = @import("test_options");
+    const fixture = if (std.fs.path.isAbsolute(config.fixture)) config.fixture else config.workspace_root ++ "/" ++ config.fixture;
+    const before_fds = try fdCount();
+    const before_children = try ownedChildren();
+    defer std.testing.allocator.free(before_children);
+    for (0..2) |index| {
+        var faults: GrowthOom = .{ .stream = index };
+        try std.testing.expectError(error.OutOfMemory, reportWith(faults.allocator(), std.testing.io, .{
+            .spawn = .{ .argv = &.{ fixture, "exact", "200000" } },
+        }, &faults));
+        try std.testing.expect(faults.failed);
+        try std.testing.expect(faults.lengths[index] > 8192);
+        try std.testing.expectEqual(before_fds, try fdCount());
+        const after_children = try ownedChildren();
+        defer std.testing.allocator.free(after_children);
+        try std.testing.expectEqualStrings(before_children, after_children);
+    }
 }

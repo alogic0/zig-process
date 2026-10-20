@@ -44,25 +44,83 @@ test "cwd handles paths and child environment PATH lookup" {
 }
 
 test "independent stdout stderr limits exact zero and simultaneous large output" {
-    for ([_]usize{ 0, 1, 4096, 200_000 }) |size| {
-        const count = try std.fmt.allocPrint(t.allocator, "{d}", .{size});
-        defer t.allocator.free(count);
-        const result = try p.run(t.allocator, t.io, .{ .spawn = .{ .argv = &.{ fixture, "exact", count } }, .stdout_limit = size, .stderr_limit = size });
-        defer result.deinit(t.allocator);
-        try t.expect(result.success());
-        try t.expectEqual(size, result.stdout.len);
-        try t.expectEqual(size, result.stderr.len);
+    for ([_]p.CaptureAllocation{ .grow, .preallocate }) |allocation| {
+        for ([_]usize{ 0, 1, 4096, 8191, 8192, 8193, 200_000 }) |size| {
+            const count = try std.fmt.allocPrint(t.allocator, "{d}", .{size});
+            defer t.allocator.free(count);
+            const result = try p.run(t.allocator, t.io, .{ .spawn = .{ .argv = &.{ fixture, "exact", count } }, .stdout_limit = size, .stderr_limit = size, .capture_allocation = allocation });
+            defer result.deinit(t.allocator);
+            try t.expect(result.success());
+            try t.expectEqual(size, result.stdout.len);
+            try t.expectEqual(size, result.stderr.len);
+            try t.expect(std.mem.allEqual(u8, result.stdout, 'x'));
+            try t.expect(std.mem.allEqual(u8, result.stderr, 'y'));
+        }
+        for ([_][2]usize{ .{ 0, 100 }, .{ 100, 0 }, .{ 4096, 5000 }, .{ 5000, 4096 } }) |limits| {
+            const result = try p.run(t.allocator, t.io, .{ .spawn = .{ .argv = &.{ fixture, "exact", "5000" } }, .stdout_limit = limits[0], .stderr_limit = limits[1], .capture_allocation = allocation });
+            defer result.deinit(t.allocator);
+            try t.expectEqual(p.Outcome.output_limit, result.outcome);
+            try t.expect(result.stdout.len <= limits[0] and result.stderr.len <= limits[1]);
+            try t.expect(!result.success());
+        }
+        const binary = try p.run(t.allocator, t.io, .{ .spawn = .{ .argv = &.{ "/bin/sh", "-c", "printf '\\000\\377'" } }, .stdout_limit = 2, .capture_allocation = allocation });
+        defer binary.deinit(t.allocator);
+        try t.expectEqualStrings("\x00\xff", binary.stdout);
     }
-    for ([_][2]usize{ .{ 0, 100 }, .{ 100, 0 }, .{ 4096, 5000 }, .{ 5000, 4096 } }) |limits| {
-        const result = try p.run(t.allocator, t.io, .{ .spawn = .{ .argv = &.{ fixture, "exact", "5000" } }, .stdout_limit = limits[0], .stderr_limit = limits[1] });
-        defer result.deinit(t.allocator);
-        try t.expectEqual(p.Outcome.output_limit, result.outcome);
-        try t.expect(result.stdout.len <= limits[0] and result.stderr.len <= limits[1]);
-        try t.expect(!result.success());
+}
+
+test "host tool capture limits need only a small budget for small or empty output" {
+    var env: std.process.Environ.Map = .init(t.allocator);
+    defer env.deinit();
+    inline for (.{ "run", "runReport" }) |api| {
+        for ([_]bool{ false, true }) |empty| {
+            var memory: [128 * 1024]u8 = undefined;
+            var budget = std.heap.FixedBufferAllocator.init(&memory);
+            const a = budget.allocator();
+            const result = try @field(p, api)(a, t.io, .{
+                .spawn = .{ .argv = if (empty) &.{ fixture, "exact", "0" } else &.{ fixture, "echo", "small" }, .environ_map = &env },
+                .stdout_limit = 512 * 1024 * 1024,
+                .stderr_limit = 8 * 1024 * 1024,
+            });
+            defer result.deinit(a);
+            try t.expect(result.outcome == .completed);
+            try t.expectEqualStrings(if (empty) "" else "small", result.stdout);
+            try t.expectEqualStrings(if (empty) "" else "err", result.stderr);
+        }
     }
-    const binary = try p.run(t.allocator, t.io, .{ .spawn = .{ .argv = &.{ "/bin/sh", "-c", "printf '\\000\\377'" } }, .stdout_limit = 2 });
-    defer binary.deinit(t.allocator);
-    try t.expectEqualStrings("\x00\xff", binary.stdout);
+    // Explicit reservation keeps its before-launch allocation requirement.
+    var memory: [128 * 1024]u8 = undefined;
+    var budget = std.heap.FixedBufferAllocator.init(&memory);
+    const before = try children();
+    defer t.allocator.free(before);
+    try t.expectError(error.OutOfMemory, p.runReport(budget.allocator(), t.io, .{
+        .spawn = .{ .argv = &.{ fixture, "sleep" }, .environ_map = &env },
+        .stdout_limit = 512 * 1024 * 1024,
+        .stderr_limit = 8 * 1024 * 1024,
+        .capture_allocation = .preallocate,
+    }));
+    const after = try children();
+    defer t.allocator.free(after);
+    try t.expectEqualStrings(before, after);
+}
+
+test "growing reports retain exact prefixes across capacity boundaries" {
+    for ([_]p.CaptureAllocation{ .grow, .preallocate }) |allocation| {
+        for ([_]usize{ 8191, 8192, 8193, 65537 }) |limit| {
+            const report = try p.runReport(t.allocator, t.io, .{
+                .spawn = .{ .argv = &.{ fixture, "exact", "70000" } },
+                .stdout_limit = limit,
+                .stderr_limit = 100_000,
+                .capture_allocation = allocation,
+            });
+            defer report.deinit(t.allocator);
+            try t.expect(report.outcome == .output_limit);
+            try t.expectEqual(limit, report.stdout.len);
+            try t.expect(std.mem.allEqual(u8, report.stdout, 'x'));
+            try t.expect(report.stderr.len <= 70_000 and std.mem.allEqual(u8, report.stderr, 'y'));
+            try t.expect(report.term != null and report.cleanup_failure == null);
+        }
+    }
 }
 
 test "failed launches and invalid options are errors with exact child ownership" {

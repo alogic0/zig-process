@@ -1,9 +1,9 @@
 # zig-process
 
 Owned Linux child processes and bounded command capture for Zig **0.17.0**.
-Standalone package, version 0.3.0, with no external dependencies.
+Standalone package, version 0.4.0, with no external dependencies.
 
-Designed from Zeta, zg-backend and Paneva's process-management requirements.
+Designed from Zeta, zg-backend, Paneva and HL2 host-tool requirements.
 See [DESIGN.md](DESIGN.md) for ownership decisions, source revisions and consumer
 boundaries, and [CURRENT_STATUS.md](CURRENT_STATUS.md) for verification scope.
 
@@ -76,6 +76,26 @@ exactly once. Neither output exceeds its configured limit.
 
 Use a reclaiming allocator for repeated `run` calls. A long-lived arena retains
 temporary capture buffers until it is reset, even after Result.deinit.
+
+Capture buffers grow with actual output by default, capped independently by
+`stdout_limit` and `stderr_limit`. A 512 MiB stdout limit does not reserve
+512 MiB for a command producing a version string. Empty streams allocate no
+capture buffer. Exactly the limit is valid; the first extra byte produces
+`output_limit` and is not retained.
+
+Set `.capture_allocation = .preallocate` to reserve both capture limits before
+launch, as in earlier releases. This avoids capture-buffer growth while the
+child runs. Both modes return the same results and hard limits; result buffers
+are still allocated separately after child cleanup. With the default `.grow`,
+allocation failure can happen while reading a live child: the library force
+cleans the child, closes its handles, releases buffers and returns OutOfMemory.
+Neither API promises partial diagnostics on OOM.
+
+For growing captures, geometric spare capacity and final output copies contribute
+to peak memory; the limits bound retained bytes, not total process RSS. Allocators
+that cannot resize may temporarily retain both old and new buffers. For large
+archives or long logs that need no in-memory result, use `Child` with file-backed
+stdout/stderr. An arena also retains earlier growth allocations until reset.
 
 By default, leader exit terminates the owned group before draining its remaining
 buffered output. Set `.exit_policy = .drain_output` to allow descendants to finish
@@ -245,3 +265,22 @@ changes, restart policies and a dedicated supervisor executable are outside v0.1
 Backend commands and several owners already use v0.2; its older import owner
 remains local at the inspected baseline. This package's tests verify its own
 contract; further consumer adoption still needs each project's existing checks.
+
+## HL2 host-tool integration
+
+At HL2 baseline `2e4824a`, `src/tools/host/common.zig` uses a shared 512 MiB/8 MiB
+capture limit for version/Git commands, shader tools and package archive output.
+Growing captures allow those hard limits without allocating their full size for
+every command. Use a reclaiming scratch allocator for `runReport`, copy only
+needed results into the caller's arena, and deinit the report.
+
+Keep explicit per-command deadlines and map timeout/output-limit/failure outcomes
+to the tool's existing errors. Use `.search_path = true` for bare executable
+names and `.exit_policy = .drain_output` when helper processes may finish output
+after their leader exits. Logs already written to files should keep using
+`Child.spawnUntil` / `waitUntil`; growth does not require changes to those APIs.
+
+The dependency belongs on Linux host-tool modules (`b.graph.host`), independently
+of the game target. Record the library revision/source identity in the existing
+tool provenance. Consumer migration, graphics/shader qualification and evidence
+policy stay in the HL2 project.

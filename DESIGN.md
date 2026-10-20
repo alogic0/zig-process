@@ -74,9 +74,10 @@ fail explicitly. The I/O implementation is std.Io.Threaded only in v0.1.
 
 Independent stdout/stderr limits count raw bytes, including binary output.
 Exactly the limit is valid; one extra byte produces `output_limit`, retaining
-only the allowed prefix. Storage is allocated before launch; output flooding
-cannot grow it. Per-tick reads are bounded so one stream cannot starve its peer
-or cancellation checks. EOF and child exit are separate conditions.
+only the allowed prefix. Since v0.4 capture buffers grow with actual output up to
+their limits, with explicit preallocation available. Per-tick reads are bounded
+so one stream cannot starve its peer or cancellation checks. EOF and child exit
+are separate conditions.
 
 Capture defaults to terminating the owned group when its leader exits. The
 optional `exit_policy = .drain_output` retains the unreaped leader and drains
@@ -153,6 +154,38 @@ and cancellation recovery, retained handles, signal status, independent children
 and a subreaper fixture proving a descendant remains live until explicit finish.
 Only the fixture installs subreaper policy. Backend migration remains separate.
 
+## Capture allocation for host tools (v0.4)
+
+HL2's shared command helper permits 512 MiB stdout and 8 MiB stderr, including
+small version/Git commands. Full reservation makes those limits unnecessarily
+expensive. `RunOptions.capture_allocation` therefore defaults to `.grow`;
+`.preallocate` reserves both bounded buffers before launch when that behavior is
+needed. This changes allocation timing, not outcome/limit/cleanup semantics.
+
+Each stream reads into an 8 KiB stack buffer, at most sixteen reads per drain.
+The read request is capped at remaining output allowance plus one overflow byte.
+Grow storage only after receiving bytes to retain: AGAIN, EOF and an overflowing
+zero-limit stream allocate nothing. Capacity starts at at most 8 KiB and grows
+geometrically, never beyond that stream's limit. Retain at most the allowed
+prefix. No sentinel byte is stored in the heap. The existing maxInt limit
+rejection keeps the one-byte lookahead arithmetic valid.
+
+Growth OOM returns OutOfMemory rather than a Report.failed outcome. The exact
+child is force-cleaned and pipes closed before capture buffers are released.
+Allocation-error unwinding covers initial reservation, either live stream,
+launch and final result copies. Other supervision failures retain their owned
+partial output and secondary cleanup errors. Both APIs use this same core.
+
+Final results remain separate owned allocations; peak memory includes capacity,
+possible reallocation overlap and result copies. An arena may also retain prior
+buffers until reset. Recommend a reclaiming scratch allocator for repeated runs,
+and Child/file redirection for data which does not need an in-memory result.
+
+The finite verification scope includes 512 MiB/8 MiB limits with empty/tiny
+output using a 128 KiB allocator, capacity boundaries and both allocation modes,
+real-child growth OOM on each stream, and existing ownership/failure regressions.
+No consumer policy, graphics dependency or streaming callback enters the library.
+
 ## Consumer integration boundaries
 
 | Consumer | Shared mechanisms | Remains local |
@@ -160,6 +193,7 @@ Only the fixture installs subreaper policy. Backend migration remains separate.
 | Zeta | launch, capture, deadline, exact child cleanup | execution budgets, typed language errors, batch/report policy |
 | zg-backend | commands, environments, process groups, wait/stop | containers, database ownership, browser profiles, evidence checks |
 | Paneva | pidfd, nonblocking pipes/polling, redirection, shutdown | readiness protocol, VT/logind, UI state, app restart and subreaper policy |
+| HL2 host tools | logged child ownership, deadlines, bounded capture | shader qualification, archive verification, provenance, manifests and graphics policy |
 
 Start future migrations at one caller per project and retain their existing
 tests. No claim of consumer compatibility or full parity follows from this
@@ -185,3 +219,7 @@ with concurrent uncommitted work; import_browser_runtime.zig, import_browser_pro
 acceptance_runner.zig, native_server_manager.zig and native_startup_regressions.zig.
 Commands already use runReport and several owners use Child; the older import
 owner still uses std.process.Child. No backend files are modified by this release.
+
+October 20 v0.4 source basis: HL2 `2e4824a73cb39201d04006a83a38830709e7d677`,
+src/tools/host/common.zig, workflow.zig, shader_build.zig and
+src/test_workflow_process.zig; zig-process `f0f3073`. No HL2 source is changed.
