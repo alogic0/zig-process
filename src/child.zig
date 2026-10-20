@@ -47,9 +47,15 @@ pub fn spawnUntil(a: std.mem.Allocator, io: std.Io, options: T.SpawnOptions, end
     for (args, options.argv) |*dest, arg| dest.* = (try scratch.dupeSentinel(u8, arg, 0)).ptr;
     var paths: std.ArrayList([:0]const u8) = .empty;
     if (options.search_path and std.mem.indexOfScalar(u8, options.argv[0], '/') == null) {
-        const path = (if (options.environ_map) |env| env.get("PATH") else inherited.getPosix("PATH")) orelse "/usr/bin:/bin";
+        const path = switch (options.search_path_environment) {
+            .child => (if (options.environ_map) |env| env.get("PATH") else inherited.getPosix("PATH")) orelse "/usr/bin:/bin",
+            .parent => inherited.getPosix("PATH") orelse std.Io.Threaded.default_PATH,
+        };
         var parts = std.mem.splitScalar(u8, path, ':');
         while (parts.next()) |part| {
+            // Match std.process.spawn's parent-PATH search, which skips empty
+            // entries. Child-PATH lookup keeps execvp-style cwd entries.
+            if (options.search_path_environment == .parent and part.len == 0) continue;
             const candidate = if (part.len == 0) options.argv[0] else try std.fs.path.join(scratch, &.{ part, options.argv[0] });
             try paths.append(scratch, try scratch.dupeSentinel(u8, candidate, 0));
         }

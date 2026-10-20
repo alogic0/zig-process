@@ -20,6 +20,9 @@ pub const SpawnOptions = struct {
     environ_map: ?*const std.process.Environ.Map = null,
     /// Search the child's PATH only when argv[0] has no slash.
     search_path: bool = false,
+    /// Legacy std.process.spawn callers search the parent's PATH even with an
+    /// explicit child environment. Only affects lookup, not the child env.
+    search_path_environment: enum { child, parent } = .child,
     stdin: Stream = .ignore,
     stdout: Stream = .ignore,
     stderr: Stream = .ignore,

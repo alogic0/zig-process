@@ -1,5 +1,7 @@
 //! Explicit Linux process ownership for Zig 0.17.0. No application dependencies.
 pub const Child = @import("child.zig");
+pub const PipeReader = @import("pipe.zig").Reader;
+pub const PipeWriter = @import("pipe.zig").Writer;
 pub const SpawnOptions = @import("types.zig").SpawnOptions;
 pub const Stream = @import("types.zig").Stream;
 pub const Group = @import("types.zig").Group;

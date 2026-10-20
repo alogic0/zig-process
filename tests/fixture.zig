@@ -6,7 +6,28 @@ pub fn main(init: std.process.Init) !void {
     const args = try init.minimal.args.toSlice(a);
     const io = init.io;
     const mode = args[1];
-    if (std.mem.eql(u8, mode, "echo")) {
+    if (std.mem.eql(u8, mode, "pipe-echo")) {
+        if (args.len > 2) {
+            while (true) {
+                std.Io.Dir.cwd().access(io, args[2], .{}) catch |err| switch (err) {
+                    error.FileNotFound => {
+                        try io.sleep(.fromMilliseconds(1), .awake);
+                        continue;
+                    },
+                    else => return err,
+                };
+                break;
+            }
+        }
+        var buffer: [1021]u8 = undefined;
+        while (true) {
+            const n = std.Io.File.stdin().readStreaming(io, &.{&buffer}) catch |err| switch (err) {
+                error.EndOfStream => return,
+                else => return err,
+            };
+            try std.Io.File.stdout().writeStreamingAll(io, buffer[0..n]);
+        }
+    } else if (std.mem.eql(u8, mode, "echo")) {
         try std.Io.File.stdout().writeStreamingAll(io, args[2]);
         try std.Io.File.stderr().writeStreamingAll(io, "err");
         std.process.exit(7);

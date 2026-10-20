@@ -4,6 +4,95 @@ const config = @import("test_options");
 const fixture = if (std.fs.path.isAbsolute(config.fixture)) config.fixture else config.workspace_root ++ "/" ++ config.fixture;
 const t = std.testing;
 const linux = std.os.linux;
+
+test "pipe adapters preserve binary duplex bytes backpressure and EOF" {
+    var child = try p.Child.spawn(t.allocator, t.io, .{ .argv = &.{ fixture, "pipe-echo" }, .stdin = .pipe, .stdout = .pipe });
+    defer child.deinit();
+    var rb: [67]u8 = undefined;
+    var wb: [31]u8 = undefined;
+    var reader = p.PipeReader.init(child.stdout.?, t.io, &rb);
+    var writer = p.PipeWriter.init(child.stdin.?, t.io, &wb);
+    var bytes: [200_003]u8 = undefined;
+    for (&bytes, 0..) |*byte, i| byte.* = @truncate(i);
+    const Sender = struct {
+        fn send(c: *p.Child, w: *p.PipeWriter, data: []const u8) !void {
+            try w.interface.writeAll(data);
+            try w.interface.flush();
+            c.closeStdin();
+        }
+    };
+    var sending = try t.io.concurrent(Sender.send, .{ &child, &writer, &bytes });
+    defer _ = sending.cancel(t.io) catch {};
+    var received: [bytes.len]u8 = undefined;
+    try reader.interface.readSliceAll(&received);
+    try t.expectEqualSlices(u8, &bytes, &received);
+    try t.expectError(error.EndOfStream, reader.interface.takeByte());
+    try sending.await(t.io);
+    try t.expect((try child.wait(2000)).success());
+}
+
+test "pipe cancellation retains buffers and ownership for recovery; closed peer reports broken pipe" {
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    const gate = try t.allocator.print("{s}/gate", .{root});
+    defer t.allocator.free(gate);
+    var child = try p.Child.spawn(t.allocator, t.io, .{ .argv = &.{ fixture, "pipe-echo", gate }, .stdin = .pipe, .stdout = .pipe });
+    defer child.deinit();
+    var rb: [16]u8 = undefined;
+    var wb: [16]u8 = undefined;
+    var reader = p.PipeReader.init(child.stdout.?, t.io, &rb);
+    var writer = p.PipeWriter.init(child.stdin.?, t.io, &wb);
+    var reading = try t.io.concurrent(IoReadByte, .{&reader});
+    try t.io.sleep(.fromMilliseconds(10), .awake);
+    try t.expectError(error.ReadFailed, reading.cancel(t.io));
+    try t.expectEqual(error.Canceled, reader.err.?);
+    try t.expect(child.pid != null and child.pollHandle() != null);
+    // Fill the actual kernel pipe before canceling a buffered flush. No timing
+    // assumption decides whether the writer encountered backpressure.
+    var count: usize = 0;
+    const fill: [4096]u8 = @splat('x');
+    while (true) {
+        count += child.stdin.?.writeStreaming(t.io, &.{}, &.{&fill}, 1) catch |err| switch (err) {
+            error.WouldBlock => break,
+            else => return err,
+        };
+    }
+    try writer.interface.writeAll("tail");
+    var writing = try t.io.concurrent(IoFlush, .{&writer});
+    try t.io.sleep(.fromMilliseconds(10), .awake);
+    try t.expectError(error.WriteFailed, writing.cancel(t.io));
+    try t.expectEqual(error.Canceled, writer.err.?);
+    try t.expectEqualStrings("tail", writer.interface.buffered());
+    try tmp.dir.writeFile(t.io, .{ .sub_path = "gate", .data = "" });
+    // Drain the known prefix to make room, then resume the same buffered flush.
+    for (0..count) |_| try t.expectEqual(@as(u8, 'x'), try reader.interface.takeByte());
+    try writer.interface.flush();
+    child.closeStdin();
+    var tail: [4]u8 = undefined;
+    try reader.interface.readSliceAll(&tail);
+    try t.expectEqualStrings("tail", &tail);
+    try t.expect(reader.err == null and writer.err == null);
+    try t.expectError(error.EndOfStream, reader.interface.takeByte());
+    try t.expect((try child.wait(2000)).success());
+
+    var exited = try p.Child.spawn(t.allocator, t.io, .{ .argv = &.{ fixture, "echo", "" }, .stdin = .pipe });
+    defer exited.deinit();
+    try t.expect((try exited.pollFor(2000)) != null);
+    var broken = p.PipeWriter.init(exited.stdin.?, t.io, &wb);
+    try broken.interface.writeAll("closed");
+    try t.expectError(error.WriteFailed, broken.interface.flush());
+    try t.expectEqual(error.BrokenPipe, broken.err.?);
+}
+
+fn IoReadByte(reader: *p.PipeReader) !u8 {
+    return reader.interface.takeByte();
+}
+fn IoFlush(writer: *p.PipeWriter) !void {
+    try writer.interface.flush();
+}
+
 test "capture direct arguments binary bytes and nonzero exit" {
     const result = try p.run(t.allocator, t.io, .{ .spawn = .{ .argv = &.{ fixture, "echo", "hi \xff" } } });
     defer result.deinit(t.allocator);
@@ -41,6 +130,13 @@ test "cwd handles paths and child environment PATH lookup" {
     defer relative.deinit(t.allocator);
     try t.expectEqualStrings("relative-script", relative.stdout);
     try t.expect(relative.success());
+    try env.put("PATH", "/does-not-exist");
+    const parent_path = try p.run(t.allocator, t.io, .{
+        .spawn = .{ .argv = &.{ "sh", "-c", "printf '%s' \"$PATH\"" }, .environ_map = &env, .search_path = true, .search_path_environment = .parent },
+    });
+    defer parent_path.deinit(t.allocator);
+    try t.expect(parent_path.success());
+    try t.expectEqualStrings("/does-not-exist", parent_path.stdout);
 }
 
 test "independent stdout stderr limits exact zero and simultaneous large output" {

@@ -22,6 +22,14 @@ CURRENT_STATUS.md, Debug/ReleaseSafe checks, and committed standalone sources.
 3. A dedicated descendant supervisor is a future, separately executable layer.
    The embedded library never enables subreaping or calls `waitpid(-1)`.
 
+`PipeReader`/`PipeWriter` are borrowed, allocation-free streaming adapters for
+interactive parent pipes. They retry WouldBlock with cancelable 1 ms waits and
+delegate syscall/error behavior to std.Io. They do not own handles, implement
+framing, impose deadlines, or finish children. A caller joins protocol tasks
+before ending ownership; partial-I/O progress remains ordinary Reader/Writer
+progress when canceled. Tests cover backpressure, binary data, EOF, broken pipe
+and reuse after cancellation. Capture still uses its existing independent loop.
+
 `Child` and its handles are move-only by convention and confined to one owner.
 The caller must not copy a live owner, close borrowed handles, or reap its PID.
 Concurrent independent owners are supported. Allocator and std.Io are explicit.
@@ -59,7 +67,10 @@ syscalls only. The parent owns the child before waiting for exec acknowledgement
 Arguments and environment are byte strings without NUL; no shell expansion or
 UTF-8 policy. An explicit environment replaces inheritance. PATH search is an
 explicit option and uses the child's environment, unlike std.process.spawn's
-parent-PATH behavior. Missing PATH uses `/usr/bin:/bin`; empty components mean
+parent-PATH behavior. The opt-in `search_path_environment = .parent` preserves
+that legacy lookup without changing the explicit child environment; it skips
+empty entries and uses std.Io.Threaded.default_PATH if the parent has no PATH.
+Default child lookup is unchanged. Missing PATH uses `/usr/bin:/bin`; empty components mean
 the child's cwd. A slash in argv[0] bypasses search. Relative paths resolve in the
 child's cwd. Executables without a recognized format fail; there is no shell fallback.
 

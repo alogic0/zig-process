@@ -1,7 +1,7 @@
 # zig-process
 
 Owned Linux child processes and bounded command capture for Zig **0.17.0**.
-Standalone package, version 0.4.0, with no external dependencies.
+Standalone package, version 0.5.0, with no external dependencies.
 
 Designed from Zeta, zg-backend, Paneva and HL2 host-tool requirements.
 See [DESIGN.md](DESIGN.md) for ownership decisions, source revisions and consumer
@@ -66,6 +66,43 @@ never invokes a shell implicitly. PATH lookup is off by default; enable
 `.search_path = true` for bare command names. An explicit `.environ_map` replaces
 inheritance and supplies the PATH used for lookup. Arguments/output may contain
 arbitrary bytes, except argv/environment strings cannot contain NUL.
+For compatibility with `std.process.spawn`, explicitly select
+`.search_path_environment = .parent`: lookup uses the parent's PATH, skips empty
+entries and uses Zig's parent-PATH fallback, while the child's environment stays
+unchanged. This option has no effect unless `search_path` is enabled.
+
+## Interactive pipes
+
+`Child`'s parent pipe ends are nonblocking. Use `PipeReader.init(file, io, buffer)`
+and `PipeWriter.init(file, io, buffer)` for `std.Io.Reader`/`Writer` interfaces
+that retry WouldBlock with cancelable 1 ms waits. Standard Zig 0.17 file streams
+instead surface that condition as an I/O failure. For example:
+
+```zig
+var reader = process.PipeReader.init(child.stdout.?, io, &read_buffer);
+var writer = process.PipeWriter.init(child.stdin.?, io, &write_buffer);
+try writer.interface.writeAll(request);
+try writer.interface.flush();
+try reader.interface.readSliceAll(reply);
+```
+
+These adapters borrow the file and buffer; they never close handles or finish
+the child. Join stdin writers before `closeStdin`, and all I/O tasks before
+`stop` or `deinit`. A caller
+may race its protocol task against a deadline using `std.Io.Select`; canceling
+the task interrupts both empty reads and full-pipe writes. Framing and protocol
+EOF decisions remain with the caller. Duplex exchanges larger than pipe capacity
+need concurrent reading and writing to avoid peer backpressure deadlocks.
+
+The interfaces retain ordinary partial-I/O semantics, not transaction semantics:
+bytes already consumed stay consumed. WouldBlock retries preserve progress;
+a canceled buffered flush retains its unwritten buffer and can be resumed.
+`err` records the underlying ReadFailed/WriteFailed cause (including Canceled)
+and clears on successful I/O. EOF remains EndOfStream. The adapters do not change
+descriptor flags or process-wide signal policy. The package consumer and native
+tests provide executable examples.
+
+## Capture outcomes
 
 `outcome` is `completed`, `timed_out`, `canceled` or `output_limit`. `term` retains
 the actual exit code/signal, including termination used for cleanup. Only

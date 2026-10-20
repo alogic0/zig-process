@@ -1,5 +1,39 @@
 # Current delivery
 
+## v0.5 interactive pipe adapters, October 20, 2026
+
+Completed bounded prerequisite for backend import owner migration from
+`53655012d44b8b14d32dd0eede48366f3226e50a`, library baseline
+`b088421bf7406ddc269c5dec4ddf18c4345c6e24`: supply borrowed, cancelable
+`Io.Reader`/`Io.Writer` adapters for nonblocking parent pipes. Standard Zig 0.17
+file streams return WouldBlock instead of awaiting readiness. Preserve partial
+I/O, EOF, errors and explicit Child ownership; leave framing and deadlines in
+the consumer. No capture configuration or process-wide policy changes.
+
+Finite cases: delayed binary input, writes larger than pipe capacity, EOF,
+broken pipe, cancellation and reuse after cancellation. Reuse native fixtures,
+run Debug/ReleaseSafe library and package checks, then commit this prerequisite.
+
+Implemented as v0.5.0 with `PipeReader`/`PipeWriter` and explicit
+`search_path_environment = .parent` compatibility for std child migrations.
+Default child-environment lookup and runReport capture remain unchanged. A
+parent-PATH test also proves that the child's explicit PATH is not overwritten.
+
+| Check | Result |
+| --- | --- |
+| `zig build test check --summary all`, Debug and ReleaseSafe | 29/29 tests, 11/11 steps each |
+| `zig build test --summary all` in tests/package, both profiles | 3/3 steps each, including interactive binary round trip and EOF |
+| Format and diff checks | Passed |
+
+The 29 tests comprise 25 public and four private cases. Added cases exchange
+200,003 binary bytes through small buffers, cancel empty reads/full-pipe flushes,
+resume the same reader/writer, retain unwritten buffered bytes, and check EOF and
+BrokenPipe without closing or finishing the owner. Native fixture and package
+examples use independent blocking peers. Logs are
+`/tmp/zig-process-pipes-{debug,safe}.log` and
+`/tmp/zig-process-pipes-package-{debug,safe}.log`. Backend integration and its
+finite protocol/resource checks are recorded by that consumer.
+
 ## v0.4 capture allocation for host tools, October 20, 2026
 
 Execution brief: remove full-limit capture reservation from ordinary commands.
