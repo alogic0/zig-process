@@ -54,9 +54,15 @@ pub fn main(init: std.process.Init) !void {
         var child = try process.Child.spawn(init.gpa, io, .{ .argv = &.{ "/bin/sh", "-c", "/bin/sleep 30 & echo $!; exit 7" }, .stdout = .pipe });
         defer child.deinit();
         const end = std.Io.Clock.awake.now(io).addDuration(.fromSeconds(2));
-        while (try child.poll() == null) {
-            if (std.Io.Clock.awake.now(io).nanoseconds >= end.nanoseconds) return error.LeaderDidNotExit;
-            try io.sleep(.fromMilliseconds(1), .awake);
+        if (args.len > 2 and std.mem.eql(u8, args[2], "timed")) {
+            const term = try child.pollUntil(end, null) orelse return error.LeaderDidNotExit;
+            if (term.exited != 7) return error.WrongObservedStatus;
+            if ((try child.pollFor(0)).?.exited != 7) return error.UnstableObservation;
+        } else {
+            while (try child.poll() == null) {
+                if (std.Io.Clock.awake.now(io).nanoseconds >= end.nanoseconds) return error.LeaderDidNotExit;
+                try io.sleep(.fromMilliseconds(1), .awake);
+            }
         }
         var buffer: [64]u8 = undefined;
         const n = linux.read(child.stdout.?.handle, &buffer, buffer.len);
@@ -69,6 +75,13 @@ pub fn main(init: std.process.Init) !void {
             _ = linux.wait4(descendant, &status, 0, null);
         };
         if (child.pid == null or child.pollHandle() == null) return error.PollConsumedOwnership;
+        var descendant_info = std.mem.zeroes(linux.siginfo_t);
+        while (true) switch (linux.errno(linux.waitid(.PID, descendant, &descendant_info, linux.W.EXITED | linux.W.NOHANG | linux.W.NOWAIT, null))) {
+            .SUCCESS => break,
+            .INTR => continue,
+            else => return error.DescendantObservationFailed,
+        };
+        if (descendant_info.fields.common.first.piduid.pid != 0) return error.PollKilledDescendant;
         if ((try child.finish()).exited != 7) return error.WrongLeaderStatus;
         var status: i32 = 0;
         while (true) {

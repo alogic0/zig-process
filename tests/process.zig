@@ -117,6 +117,101 @@ test "poll wait timeout graceful forced stop and idempotent cleanup" {
     }
 }
 
+test "bounded observation retains handles and shares an absolute deadline" {
+    // The stdin fixture cannot exit until this test releases it.
+    const end = std.Io.Clock.awake.now(t.io).addDuration(.fromSeconds(3));
+    var child = try p.Child.spawnUntil(t.allocator, t.io, .{
+        .argv = &.{ fixture, "stdin" },
+        .stdin = .pipe,
+        .stdout = .pipe,
+        .stderr = .pipe,
+    }, end);
+    defer child.deinit();
+    const pid = child.pid.?;
+    const pidfd = child.pollHandle().?;
+    const input = child.stdin.?.handle;
+    const output = child.stdout.?.handle;
+    const stderr_fd = child.stderr.?.handle;
+    const expired = std.Io.Clock.awake.now(t.io).addDuration(.fromMilliseconds(-1));
+    try t.expect(try child.pollFor(0) == null);
+    try t.expect(try child.pollFor(5) == null);
+    try t.expect(try child.pollUntil(expired, null) == null);
+    try t.expectError(error.Timeout, child.waitUntil(expired, null));
+    try t.expectEqual(pid, child.pid.?);
+    try t.expectEqual(pidfd, child.pollHandle().?);
+    try t.expectEqual(input, child.stdin.?.handle);
+    try t.expectEqual(output, child.stdout.?.handle);
+    try t.expectEqual(stderr_fd, child.stderr.?.handle);
+
+    try child.stdin.?.writeStreamingAll(t.io, "released");
+    child.closeStdin();
+    const observed = (try child.pollUntil(end, null)) orelse return error.FixtureExitDeadline;
+    try t.expect(observed.success());
+    try t.expectEqualDeep(observed, (try child.pollFor(0)).?);
+    try t.expectEqual(pid, child.pid.?);
+    try t.expectEqual(pidfd, child.pollHandle().?);
+    try t.expect(child.term == null);
+    // Timeout does not hide an exit that can already be observed.
+    try t.expectEqualDeep(observed, try child.waitUntil(expired, null));
+    try t.expect(child.pid == null and child.pidfd == null);
+    try t.expectEqualDeep(observed, (try child.pollFor(0)).?);
+    try t.expectEqualDeep(observed, try child.wait(0));
+    var bytes: [32]u8 = undefined;
+    const n = linux.read(output, &bytes, bytes.len);
+    try t.expectEqual(linux.E.SUCCESS, linux.errno(n));
+    try t.expectEqualStrings("released", bytes[0..n]);
+    child.deinit();
+    for ([_]linux.fd_t{ pidfd, input, output, stderr_fd }) |fd| {
+        try t.expectEqual(linux.E.BADF, linux.errno(linux.fcntl(fd, linux.F.GETFD, 0)));
+    }
+}
+
+test "bounded observation and wait cancellation preserve ownership" {
+    var child = try p.Child.spawn(t.allocator, t.io, .{ .argv = &.{ fixture, "sleep" }, .stdout = .pipe });
+    defer child.deinit();
+    try ready(&child);
+    const pid = child.pid.?;
+    const pidfd = child.pollHandle().?;
+    const output = child.stdout.?.handle;
+    const end = std.Io.Clock.awake.now(t.io).addDuration(.fromSeconds(5));
+    var flag: p.Cancellation = .{};
+    flag.request();
+    try t.expectError(error.Canceled, child.pollUntil(end, &flag));
+    try t.expectError(error.Canceled, child.waitUntil(end, &flag));
+    var observer = try t.io.concurrent(p.Child.pollUntil, .{ &child, end, @as(?*const p.Cancellation, null) });
+    try t.expectError(error.Canceled, observer.cancel(t.io));
+    var waiter = try t.io.concurrent(p.Child.waitUntil, .{ &child, end, @as(?*const p.Cancellation, null) });
+    try t.expectError(error.Canceled, waiter.cancel(t.io));
+    try t.expectEqual(pid, child.pid.?);
+    try t.expectEqual(pidfd, child.pollHandle().?);
+    try t.expectEqual(output, child.stdout.?.handle);
+    try t.expect(try child.poll() == null);
+    // Token cancellation is scoped to an operation, not retained on Child.
+    try child.signal(.TERM);
+    const observed = (try child.pollUntil(end, null)) orelse return error.FixtureExitDeadline;
+    try t.expectEqual(linux.SIG.TERM, observed.signal);
+    // Explicit cancellation wins even when an exit is ready to observe.
+    try t.expectError(error.Canceled, child.pollUntil(end, &flag));
+    try t.expectEqual(pid, child.pid.?);
+    try t.expectEqualDeep(observed, try child.waitUntil(end, null));
+    try t.expectEqual(linux.E.SRCH, linux.errno(linux.kill(pid, @fromBackingInt(0))));
+}
+
+test "bounded observation reports closed owners and leaves siblings waitable" {
+    var closed: p.Child = .{ .io = t.io, .group = .owned };
+    defer closed.deinit();
+    const end = std.Io.Clock.awake.now(t.io).addDuration(.fromSeconds(3));
+    try t.expectError(error.Closed, closed.pollFor(0));
+    try t.expectError(error.Closed, closed.waitUntil(end, null));
+    var first = try p.Child.spawn(t.allocator, t.io, .{ .argv = &.{ fixture, "echo", "first" } });
+    defer first.deinit();
+    var other = try p.Child.spawn(t.allocator, t.io, .{ .argv = &.{ "/bin/sh", "-c", "exit 23" }, .group = .child_only });
+    defer other.deinit();
+    try t.expectEqual(@as(u8, 7), (try first.pollFor(2000)).?.exited);
+    try t.expectEqual(@as(u8, 23), (try other.waitUntil(end, null)).exited);
+    try t.expectEqual(@as(u8, 7), (try first.stop(0)).exited);
+}
+
 test "deadline includes waiting after output closes and retains partial bytes" {
     for ([_][]const u8{ "sleep", "closed" }) |mode| {
         const start = std.Io.Clock.awake.now(t.io);
@@ -268,6 +363,13 @@ test "group cleanup and closed standard descriptors in isolated helpers" {
         if (!result.success()) std.debug.print("helper {s}: {s}\n", .{ mode, result.stderr });
         try t.expect(result.success());
     }
+}
+
+test "bounded observation leaves descendants alive until explicit finish" {
+    const result = try p.run(t.allocator, t.io, .{ .spawn = .{ .argv = &.{ fixture, "group-test", "timed" } }, .timeout_ms = 5000 });
+    defer result.deinit(t.allocator);
+    if (!result.success()) std.debug.print("bounded group helper: {s}\n", .{result.stderr});
+    try t.expect(result.success());
 }
 
 test "std Io cancellation joins command and preserves low-level wait ownership" {

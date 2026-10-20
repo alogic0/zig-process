@@ -157,6 +157,26 @@ pub fn poll(self: *Self) !?Term {
     };
 }
 
+/// Wait up to timeout_ms for exit without reaping or terminating descendants.
+/// Null means the interval elapsed. Zero performs one cancellation-aware poll.
+pub fn pollFor(self: *Self, timeout_ms: u32) !?Term {
+    return self.pollUntil(T.deadline(self.io, timeout_ms), null);
+}
+
+/// Observe until an absolute .awake deadline, sharing a budget with launch or
+/// other work. Cancellation takes precedence over an observed exit. Even an
+/// expired deadline checks status once. Neither timeout nor success consumes
+/// ownership; finish/stop/deinit is still required. The token is borrowed only
+/// for this call, independently of the token passed to spawn.
+pub fn pollUntil(self: *Self, end: std.Io.Timestamp, cancellation: ?*const T.Cancellation) !?Term {
+    while (true) {
+        try T.check(self.io, cancellation);
+        if (try self.poll()) |term| return term;
+        if (T.expired(self.io, end)) return null;
+        try self.io.sleep(.fromMilliseconds(1), .awake);
+    }
+}
+
 pub fn signal(self: *Self, sig: linux.SIG) !void {
     const fd = self.pidfd orelse return error.Closed;
     const rc = linux.pidfd_send_signal(fd, sig, null, 0);
@@ -178,13 +198,15 @@ pub fn finish(self: *Self) !Term {
 
 /// Timeout/cancellation preserves the live owner and all its descriptors.
 pub fn wait(self: *Self, timeout_ms: u32) !Term {
-    const end = T.deadline(self.io, timeout_ms);
-    while (true) {
-        try self.io.checkCancel();
-        if (try self.poll() != null) return self.finish();
-        if (T.expired(self.io, end)) return error.Timeout;
-        try self.io.sleep(.fromMilliseconds(1), .awake);
-    }
+    return self.waitUntil(T.deadline(self.io, timeout_ms), null);
+}
+
+/// Like wait, using an absolute .awake deadline and an optional borrowed token.
+/// Success finishes the child and cleans its owned group; timeout/cancellation
+/// leaves ownership intact. Use pollUntil when descendants must keep running.
+pub fn waitUntil(self: *Self, end: std.Io.Timestamp, cancellation: ?*const T.Cancellation) !Term {
+    _ = try self.pollUntil(end, cancellation) orelse return error.Timeout;
+    return self.finish();
 }
 
 /// Uncancelable TERM/grace/KILL cleanup. Joins the exact child before return.

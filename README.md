@@ -1,7 +1,7 @@
 # zig-process
 
 Owned Linux child processes and bounded command capture for Zig **0.17.0**.
-Standalone package, version 0.2.0, with no external dependencies.
+Standalone package, version 0.3.0, with no external dependencies.
 
 Designed from Zeta, zg-backend and Paneva's process-management requirements.
 See [DESIGN.md](DESIGN.md) for ownership decisions, source revisions and consumer
@@ -13,7 +13,7 @@ boundaries, and [CURRENT_STATUS.md](CURRENT_STATUS.md) for verification scope.
 zig build
 zig build test check
 zig build test check -Doptimize=ReleaseSafe
-zig build run-capture run-poll
+zig build run-capture run-poll run-lifecycle
 ./zig-out/bin/process-capture /bin/echo hello
 cd tests/package
 zig build test
@@ -147,9 +147,12 @@ if (try child.poll()) |_| {
 | --- | --- |
 | `Child.spawn` | Returns one owner after exec acknowledgement; launch failure cleans up |
 | `poll()` | Returns null or observed termination; does not reap |
+| `pollFor(timeout_ms)` | Waits for exit without reaping; null on elapsed interval |
+| `pollUntil(deadline, cancellation)` | Same observation using an absolute `.awake` deadline and optional token |
 | `pollHandle()` | Borrows a Linux pidfd for an event loop; never close it |
 | `finish()` | Requires exit; kills owned group leftovers before reaping the exact leader |
 | `wait(timeout_ms)` | Waits and finishes; timeout/cancellation leaves ownership intact |
+| `waitUntil(deadline, cancellation)` | Waits and finishes within a shared deadline; timeout/cancellation leaves ownership intact |
 | `signal(sig)` | Signals the exact child and, in owned-group mode, its group |
 | `stop(grace_ms)` | Uncancelable TERM, grace, KILL and exact-child join |
 | `closeStdin()` | Closes only the parent's stdin pipe end |
@@ -168,13 +171,62 @@ default to `/dev/null`. `.inherit` on an already closed standard descriptor fail
 Only standard streams are inherited; extra parent descriptors are CLOEXEC in the
 child. Child signal dispositions and mask are reset before exec.
 
+## Backend process owners
+
+The [lifecycle example](examples/lifecycle.zig) is a compiled and runnable example
+of a log-backed child with a single budget covering launch and exit observation.
+`pollFor(0)` checks immediately. `pollUntil` also checks once when its deadline
+has expired: an observable exit wins over timeout. Cancellation is checked first
+and returns `error.Canceled`, even when exit is observable. Neither observation
+method closes pipes, reaps the leader, or signals descendants.
+
+```zig
+const deadline = std.Io.Clock.awake.now(io).addDuration(.fromSeconds(15));
+var child = try process.Child.spawnUntil(allocator, io, options, deadline);
+defer child.deinit();
+
+const term = try child.pollUntil(deadline, &cancel) orelse return error.ExitTimeout;
+// Observe application resources while the PID/group is still reserved.
+// Use term for status; keep JSON and negative-signal-code mapping in the caller.
+_ = term;
+_ = try child.finish();
+```
+
+For `zg-backend`'s `import_browser_runtime.Owned` at baseline `417baee3`:
+
+| Existing mechanism | Integration path |
+| --- | --- |
+| `std.process.spawn` with a new group and log files | `Child.spawn`; the default is an owned group; log files remain borrowed |
+| `poll(io, ms)` and its local `waitid` loop | `pollFor(ms)`, mapping `Term` to the existing status representation |
+| Status followed by browser-profile discovery and stop | Observe without finishing; discover owned profiles before `stop` |
+| TERM/grace/KILL and exact-child wait | `stop(grace_ms)`; always also defer `deinit` for descriptors and error paths |
+| A deadline spanning launch and other work | `spawnUntil` plus `pollUntil` or `waitUntil`, sharing one `.awake` timestamp |
+
+The backend currently reaps in its local status method. The proposed replacement
+deliberately keeps an exited leader unreaped until explicit finish/stop/deinit,
+preventing its PID/group identity from being reused before group cleanup.
+Retain backend process IDs and status mapping, but never signal a cached OS PID
+after ownership ends. Keep log closure, browser profiles, readiness, protocol
+framing, containers, database cleanup and evidence policy in the backend.
+Existing command callers can keep `runReport`; they need no changes.
+
+These APIs make migration possible without duplicating timed polling. Actual
+backend migration still needs its lifecycle/protocol/profile tests; this release
+changes only the library. Piped output must still be drained concurrently, and
+parent pipe ends remain nonblocking.
+
 ## Cancellation and limits
 
 Pass `.spawn.cancellation = &flag`, where `flag` is a `process.Cancellation`.
 Another thread can call `flag.request()`. Keep it alive until the operation
 returns and use a fresh flag for a new operation. `run` also honors std.Io task
 cancellation. It cleans up its child before returning captures/errors.
-`Child.wait` honors std.Io cancellation but preserves the caller's owner.
+`Child.wait` and `pollFor` honor std.Io cancellation but preserve the caller's
+owner. `pollUntil` and `waitUntil` additionally accept a per-call cancellation
+token. That token is borrowed only until the call returns, and is independent
+of the token passed to spawn; Child retains neither token. After cancellation,
+the same child may be observed/waited using a fresh token, or stopped. Cleanup
+through `stop`/`deinit` remains uncancelable.
 
 Live Child values must not be copied or concurrently operated on. Each owner
 supports independent concurrent siblings; allocator thread safety remains the
@@ -190,5 +242,6 @@ therefore remains a separate integration concern. A stuck kernel task can delay
 cleanup even after KILL. Windows/macOS, extra inherited descriptors, privilege
 changes, restart policies and a dedicated supervisor executable are outside v0.1.
 
-The three existing projects have not been migrated. This package's tests verify
-its own contract; consumer adoption still needs each project's existing checks.
+Backend commands and several owners already use v0.2; its older import owner
+remains local at the inspected baseline. This package's tests verify its own
+contract; further consumer adoption still needs each project's existing checks.

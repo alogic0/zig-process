@@ -1,5 +1,51 @@
 # Current delivery
 
+## v0.3 bounded child observation, October 20, 2026
+
+Execution brief: add timed, non-reaping observation and deadline/token-aware
+waiting for backend process owners. This protects import/recovery verification
+from premature group cleanup and lost ownership after timeout or cancellation.
+The inspected backend baseline is `417baee3f34b43dc9e08c9e8479deba7c71851be`
+with concurrent uncommitted work; library baseline is
+`b7a68f3f3605386374478389ad5f0694a768919d`.
+
+Scope: `Child.pollFor`, `pollUntil` and `waitUntil`, existing `wait` delegation,
+a compiled log-backed lifecycle example and backend migration guidance. Keep
+browser profiles, JSON/error mappings, readiness, resource ownership and signal
+policy in consumers. Backend migration and descendant supervision are excluded.
+
+Finite cases: zero/expired deadlines; live timeout retaining handles; observed
+exit retaining PID/group/pipes; explicit token and std.Io cancellation; repeated
+observation and wait; signal status; group cleanup only on finish/stop; independent
+children; closed owners; log redirection and package import. Reuse native fixtures
+and existing lifecycle/capture regressions. Exit after Debug/ReleaseSafe tests,
+examples and package checks, format/diff review and a committed valid slice.
+
+Implemented as v0.3.0. Observation returns null on timeout and preserves the
+leader, group and handles even after exit; waitUntil explicitly finishes on
+success. Existing wait keeps its previous behavior through the shared loop.
+Cancellation tokens are per-call borrows. README contains the concrete backend
+mapping and explains the deliberate change from reaping during status checks
+to retaining ownership until explicit cleanup.
+
+| Check | Result |
+| --- | --- |
+| `zig build test check run-capture run-poll run-lifecycle --summary all` | 24/24 tests, three examples, 17/17 steps |
+| Same command with `-Doptimize=ReleaseSafe` | 24/24 tests, three examples, 17/17 steps |
+| `zig build test --summary all` in tests/package, Debug and ReleaseSafe | Capture/report and new lifecycle APIs pass, 3/3 steps each |
+| Backend `zig build build-dev-cli build-import-browser-process`, Debug and ReleaseSafe | Both build, including native-schema-fixture; 8/8 steps each |
+| Zig format and whitespace checks | Passed |
+
+The 24 tests comprise 21 public acceptance cases and three private capture-unit
+cases. Four added cases cover the lifecycle matrix above. The existing isolated
+subreaper fixture now independently checks that the descendant remains alive
+after observation, then verifies KILL and exact reaping after finish.
+The lifecycle example verifies actual log bytes and removes its temporary log.
+Backend compatibility checks compiled its concurrent working tree at the stated
+HEAD into temporary installation prefixes and removed those outputs; no backend
+services or workflow suites ran. Backend sources were not modified by this slice.
+Full import owner/protocol migration and seller workflow acceptance remain separate.
+
 ## v0.2 owned failure reports, October 19, 2026
 
 `runReport` adds owned partial stdout/stderr for launch and supervision failures,

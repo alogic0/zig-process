@@ -124,6 +124,35 @@ error behavior. runReport returns the owned report. Private syscall-operation
 substitution in unit tests injects deterministic read, observation, finish, and
 cleanup failures after fixture output; there are no public fault-injection knobs.
 
+## Bounded child observation (v0.3)
+
+The backend's remaining import owner combines a timed status check with reaping
+and later group cleanup. `Child.pollFor(timeout_ms)` provides a timed status
+check while keeping the exited leader unreaped. `pollUntil(deadline, token)`
+shares an absolute `.awake` deadline with launch or application operations.
+Both return null when time elapses and otherwise return the observed Term.
+They allocate nothing, preserve pipes/PID/pidfd, and never signal descendants.
+Repeated observation returns the same exit status until explicit cleanup.
+
+Cancellation is checked before observation on every iteration, including an
+immediate/expired deadline. Status is then checked before expiration, so an
+already-observable exit is returned even with a zero or expired budget.
+Token and std.Io cancellation return Canceled with ownership intact. Tokens
+are per-operation borrows; no pointer is retained by Child after spawn or wait.
+Polling retains the existing one-millisecond sleep between status checks.
+
+`waitUntil(deadline, token)` composes observation with finish. A null observation
+becomes Timeout; successful observation finishes the group/exact child.
+Existing `wait(timeout_ms)` delegates to it with no explicit token, retaining
+its existing behavior. These methods do not drain output or perform readiness
+checks; consumers retain those responsibilities.
+
+The compiled lifecycle example demonstrates borrowed logs, a shared launch/exit
+budget, non-consuming status and explicit finish. Native tests cover timeout
+and cancellation recovery, retained handles, signal status, independent children,
+and a subreaper fixture proving a descendant remains live until explicit finish.
+Only the fixture installs subreaper policy. Backend migration remains separate.
+
 ## Consumer integration boundaries
 
 | Consumer | Shared mechanisms | Remains local |
@@ -150,3 +179,9 @@ Read-only inspection, October 19, 2026:
   Existing dirty launcher shell files were not used or modified.
 - Installed Zig 0.17.0 standard library: process.zig, process/Child.zig,
   process/Environ.zig, Io/Threaded.zig and os/linux.zig.
+
+October 20 v0.3 integration inspection: zg-backend `417baee3f34b43dc9e08c9e8479deba7c71851be`
+with concurrent uncommitted work; import_browser_runtime.zig, import_browser_process.zig,
+acceptance_runner.zig, native_server_manager.zig and native_startup_regressions.zig.
+Commands already use runReport and several owners use Child; the older import
+owner still uses std.process.Child. No backend files are modified by this release.

@@ -28,7 +28,7 @@ pub fn build(b: *std.Build) void {
     const check = b.step("check", "Compile tests and examples");
     check.dependOn(&tests.step);
     check.dependOn(&report_tests.step);
-    inline for (.{ "capture", "poll" }) |name| {
+    inline for (.{ "capture", "poll", "lifecycle" }) |name| {
         const example = b.addExecutable(.{ .name = "process-" ++ name, .root_module = b.createModule(.{ .root_source_file = b.path("examples/" ++ name ++ ".zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "process", .module = mod }} }) });
         b.installArtifact(example);
         check.dependOn(&example.step);
