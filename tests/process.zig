@@ -663,3 +663,37 @@ test "report allocation failures release successful capture buffers and descript
     defer t.allocator.free(after_children);
     try t.expectEqualStrings(before_children, after_children);
 }
+
+test "unlimited growing captures preserve legacy streams without preallocation" {
+    const unlimited = std.math.maxInt(usize);
+    for ([_][2]usize{ .{ unlimited, unlimited }, .{ 20_000, unlimited }, .{ unlimited, 20_000 } }) |limits| {
+        const report = try p.runReport(t.allocator, t.io, .{
+            .spawn = .{ .argv = &.{ fixture, "exact", "20000" } },
+            .stdout_limit = limits[0],
+            .stderr_limit = limits[1],
+            .exit_policy = .drain_output,
+        });
+        defer report.deinit(t.allocator);
+        try t.expect(report.success());
+        try t.expectEqual(@as(usize, 20_000), report.stdout.len);
+        try t.expectEqual(@as(usize, 20_000), report.stderr.len);
+        try t.expect(std.mem.allEqual(u8, report.stdout, 'x'));
+        try t.expect(std.mem.allEqual(u8, report.stderr, 'y'));
+    }
+    const limited = try p.runReport(t.allocator, t.io, .{
+        .spawn = .{ .argv = &.{ fixture, "exact", "20000" } },
+        .stdout_limit = unlimited,
+        .stderr_limit = 10,
+    });
+    defer limited.deinit(t.allocator);
+    try t.expect(limited.outcome == .output_limit);
+    try t.expectEqual(@as(usize, 10), limited.stderr.len);
+    for ([_][2]usize{ .{ unlimited, 0 }, .{ 0, unlimited } }) |limits| {
+        try t.expectError(error.InvalidOptions, p.runReport(t.allocator, t.io, .{
+            .spawn = .{ .argv = &.{fixture} },
+            .capture_allocation = .preallocate,
+            .stdout_limit = limits[0],
+            .stderr_limit = limits[1],
+        }));
+    }
+}

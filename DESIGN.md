@@ -90,6 +90,11 @@ their limits, with explicit preallocation available. Per-tick reads are bounded
 so one stream cannot starve its peer or cancellation checks. EOF and child exit
 are separate conditions.
 
+Since v0.5.1, callers can select `std.math.maxInt(usize)` for an unlimited
+stdout or stderr capture in `.grow` mode. Storage still grows only with actual
+output; allocation failure, deadlines and cancellation still apply. Preallocation
+rejects unlimited limits. Finite limits remain the default.
+
 Capture defaults to terminating the owned group when its leader exits. The
 optional `exit_policy = .drain_output` retains the unreaped leader and drains
 descendant output until both streams close, bounded by the original deadline,
@@ -178,8 +183,9 @@ The read request is capped at remaining output allowance plus one overflow byte.
 Grow storage only after receiving bytes to retain: AGAIN, EOF and an overflowing
 zero-limit stream allocate nothing. Capacity starts at at most 8 KiB and grows
 geometrically, never beyond that stream's limit. Retain at most the allowed
-prefix. No sentinel byte is stored in the heap. The existing maxInt limit
-rejection keeps the one-byte lookahead arithmetic valid.
+prefix. No sentinel byte is stored in the heap. The one-byte lookahead uses
+saturating addition so an unlimited limit cannot overflow the read-size
+calculation.
 
 Growth OOM returns OutOfMemory rather than a Report.failed outcome. The exact
 child is force-cleaned and pipes closed before capture buffers are released.

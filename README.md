@@ -120,10 +120,16 @@ Capture buffers grow with actual output by default, capped independently by
 capture buffer. Exactly the limit is valid; the first extra byte produces
 `output_limit` and is not retained.
 
-Set `.capture_allocation = .preallocate` to reserve both capture limits before
-launch, as in earlier releases. This avoids capture-buffer growth while the
-child runs. Both modes return the same results and hard limits; result buffers
-are still allocated separately after child cleanup. With the default `.grow`,
+To preserve an existing unlimited stream, set its `stdout_limit` or
+`stderr_limit` to `std.math.maxInt(usize)` with `.capture_allocation = .grow`.
+This is supported since v0.5.1. Deadlines, cancellation and allocation failure
+still apply. Finite limits remain the default and are preferred for new callers.
+
+Set `.capture_allocation = .preallocate` to reserve both finite capture limits
+before launch, as in earlier releases. Unlimited limits return `InvalidOptions`
+in this mode. This avoids capture-buffer growth while the child runs.
+For finite limits, both modes return the same results and hard limits; result
+buffers are still allocated separately after child cleanup. With the default `.grow`,
 allocation failure can happen while reading a live child: the library force
 cleans the child, closes its handles, releases buffers and returns OutOfMemory.
 Neither API promises partial diagnostics on OOM.

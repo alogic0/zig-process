@@ -7,6 +7,8 @@ pub const CaptureAllocation = enum { grow, preallocate };
 pub const Options = struct {
     spawn: T.SpawnOptions,
     timeout_ms: u32 = 30_000,
+    /// maxInt(usize) preserves an unlimited stream for legacy consumers.
+    /// Unlimited streams require grow mode; deadlines and cancellation still apply.
     stdout_limit: usize = 1024 * 1024,
     stderr_limit: usize = 1024 * 1024,
     /// Grow with actual output, or reserve both capture limits before launch.
@@ -115,7 +117,7 @@ const Captured = struct {
 };
 
 fn captureWith(a: std.mem.Allocator, io: std.Io, options: Options, ops: anytype) !Captured {
-    if (options.timeout_ms == 0 or options.spawn.launch_timeout_ms == 0 or options.spawn.stdin == .pipe or options.spawn.stdout != .ignore or options.spawn.stderr != .ignore or options.stdout_limit == std.math.maxInt(usize) or options.stderr_limit == std.math.maxInt(usize)) return error.InvalidOptions;
+    if (options.timeout_ms == 0 or options.spawn.launch_timeout_ms == 0 or options.spawn.stdin == .pipe or options.spawn.stdout != .ignore or options.spawn.stderr != .ignore or (options.capture_allocation == .preallocate and (options.stdout_limit == std.math.maxInt(usize) or options.stderr_limit == std.math.maxInt(usize)))) return error.InvalidOptions;
     const end = T.deadline(io, options.timeout_ms);
     var captured: Captured = .{ .streams = .{ .{ .limit = options.stdout_limit }, .{ .limit = options.stderr_limit } } };
     errdefer captured.deinit(a);
@@ -220,7 +222,7 @@ const Capture = struct {
         // Per-stream work is bounded even when a child continually refills it.
         for (0..16) |_| {
             const remaining = self.limit - self.len;
-            switch (try ops.read(fd, buffer[0..@min(buffer.len, remaining + 1)])) {
+            switch (try ops.read(fd, buffer[0..@min(buffer.len, remaining +| 1)])) {
                 .bytes => |n| {
                     if (n == 0) {
                         self.eof = true;

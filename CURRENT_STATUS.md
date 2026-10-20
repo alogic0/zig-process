@@ -1,5 +1,31 @@
 # Current delivery
 
+## v0.5.1 unlimited capture compatibility, October 20, 2026
+
+HL2 binding generation sets a stdout limit but inherits Zig 0.17.0's unlimited
+stderr default. Permit `std.math.maxInt(usize)` on either stream in `.grow`
+mode so consumers can preserve that behavior. Preallocation still rejects
+unlimited limits; finite defaults and limits are unchanged.
+
+The capture loop uses saturating addition for its overflow-byte read allowance.
+Storage grows with actual output, and the existing deadline, cancellation,
+allocation-error and exact-child cleanup paths remain in effect. The existing
+v0.5.0 parent-PATH option is also available for consumer migrations.
+
+The regression case checks 20,000 bytes on both streams with either or both
+unlimited, enforcement of a finite peer limit, and preallocation rejection
+for either unlimited stream.
+
+| Check | Result |
+| --- | --- |
+| `zig build test -Dtest-filter=unlimited --summary all`, both profiles | 1/1 test, 7/7 steps each |
+| `zig build test check --summary all`, Debug and ReleaseSafe | 11/11 steps each; Debug reused passing tests, ReleaseSafe ran 30/30 |
+| `zig build test --summary all` in tests/package, both profiles | 3/3 steps each |
+| Format and diff checks | Passed |
+
+These are library checks. HL2 snapshot refresh and consumer acceptance remain
+with the adopting project.
+
 ## v0.5 interactive pipe adapters, October 20, 2026
 
 Completed bounded prerequisite for backend import owner migration from
