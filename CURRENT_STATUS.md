@@ -55,10 +55,8 @@ The 29 tests comprise 25 public and four private cases. Added cases exchange
 200,003 binary bytes through small buffers, cancel empty reads/full-pipe flushes,
 resume the same reader/writer, retain unwritten buffered bytes, and check EOF and
 BrokenPipe without closing or finishing the owner. Native fixture and package
-examples use independent blocking peers. Logs are
-`/tmp/zig-process-pipes-{debug,safe}.log` and
-`/tmp/zig-process-pipes-package-{debug,safe}.log`. Backend integration and its
-finite protocol/resource checks are recorded by that consumer.
+examples use independent blocking peers. Backend integration and its finite
+protocol/resource checks are recorded by that consumer.
 
 ## v0.4 capture allocation for host tools, October 20, 2026
 
