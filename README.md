@@ -25,6 +25,10 @@ Builds require exactly Zig 0.17.0. Tests use native fixture executables and
 ordinary local processes; no database, browser, service or desktop session is
 started. Optional `-Dtest-filter=substring` selects matching tests.
 
+GitHub Actions runs the library tests, examples and package consumer on Linux
+in Debug and ReleaseSafe using the compiler pinned in `.zigversion`. The
+workflow also checks Zig formatting and can be run manually.
+
 ## Use as a package
 
 For a sibling project, add to its `build.zig.zon` dependencies:
