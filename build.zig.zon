@@ -4,5 +4,5 @@
     .version = "0.5.1",
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
-    .paths = .{ "build.zig", "build.zig.zon", ".zigversion", "src", "tests", "examples", "README.md", "DESIGN.md", "CURRENT_STATUS.md", "AGENTS.md" },
+    .paths = .{ "build.zig", "build.zig.zon", ".zigversion", "src", "tests", "examples", "LICENSE", "README.md", "DESIGN.md", "CURRENT_STATUS.md", "AGENTS.md" },
 }

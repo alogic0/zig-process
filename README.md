@@ -3,6 +3,8 @@
 Owned Linux child processes and bounded command capture for Zig **0.17.0**.
 Standalone package, version 0.5.0, with no external dependencies.
 
+Licensed under the [MIT License](LICENSE).
+
 Designed from Zeta, zg-backend, Paneva and HL2 host-tool requirements.
 See [DESIGN.md](DESIGN.md) for ownership decisions, source revisions and consumer
 boundaries, and [CURRENT_STATUS.md](CURRENT_STATUS.md) for verification scope.
