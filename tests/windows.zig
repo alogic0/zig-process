@@ -207,3 +207,11 @@ fn failedLaunches(path: []const u8) !void {
     token.request();
     try t.expectError(error.Canceled, p.Child.spawn(t.allocator, t.io, .{ .argv = &.{fixture}, .cancellation = &token }));
 }
+
+test "rapid natural exits remain successful while cleanup races termination" {
+    for (0..64) |_| {
+        var child = try p.Child.spawn(t.allocator, t.io, .{ .argv = &.{ fixture, "binary" } });
+        defer child.deinit();
+        try t.expectEqual(@as(u8, 7), (try child.wait(10_000)).exited);
+    }
+}

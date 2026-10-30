@@ -296,6 +296,13 @@ fn terminate(self: *Self) !void {
 }
 fn terminateHandle(handle: w.HANDLE) !void {
     if (WaitForSingleObject(handle, 0) == 258 and TerminateProcess(handle, 1) == 0) {
+        // These handles have PROCESS_TERMINATE access. A concurrent exit can
+        // make termination return ACCESS_DENIED before the process object is
+        // signaled; wait for that terminal transition rather than failing stop.
+        if (w.GetLastError() == .ACCESS_DENIED) {
+            if (WaitForSingleObject(handle, std.math.maxInt(u32)) != 0) return fail();
+            return;
+        }
         const err = fail();
         if (WaitForSingleObject(handle, 0) != 0) return err;
     }
