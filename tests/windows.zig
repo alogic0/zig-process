@@ -134,16 +134,12 @@ test "failed launches unsupported pipes and canceled launch release all handles"
     try tmp.dir.writeFile(t.io, .{ .sub_path = "invalid.exe", .data = "not executable" });
     const path = try tmp.dir.realPathFileAlloc(t.io, "invalid.exe", t.allocator);
     defer t.allocator.free(path);
+    // Warm the exact success/failure paths before measuring incremental handle
+    // ownership, then require twenty further attempts to leave it unchanged.
+    for (0..10) |_| try failedLaunches(path);
     var before: u32 = 0;
     try t.expect(GetProcessHandleCount(GetCurrentProcess(), &before) != 0);
-    for (0..10) |_| {
-        try t.expectError(error.FileNotFound, p.Child.spawn(t.allocator, t.io, .{ .argv = &.{"Z:\\missing-process-928381.exe"} }));
-        try t.expectError(error.InvalidExe, p.Child.spawn(t.allocator, t.io, .{ .argv = &.{path} }));
-        try t.expectError(error.UnsupportedStream, p.Child.spawn(t.allocator, t.io, .{ .argv = &.{fixture}, .stdout = .pipe }));
-        var token: p.Cancellation = .{};
-        token.request();
-        try t.expectError(error.Canceled, p.Child.spawn(t.allocator, t.io, .{ .argv = &.{fixture}, .cancellation = &token }));
-    }
+    for (0..20) |_| try failedLaunches(path);
     var after: u32 = 0;
     try t.expect(GetProcessHandleCount(GetCurrentProcess(), &after) != 0);
     try t.expectEqual(before, after);
@@ -201,4 +197,13 @@ test "cleanup joins more descendants than fit in one job query batch" {
     }
     _ = try child.stop(0);
     for (handles) |handle| try t.expectEqual(@as(u32, 0), WaitForSingleObject(handle, 0));
+}
+
+fn failedLaunches(path: []const u8) !void {
+    try t.expectError(error.FileNotFound, p.Child.spawn(t.allocator, t.io, .{ .argv = &.{"Z:\\missing-process-928381.exe"} }));
+    try t.expectError(error.InvalidExe, p.Child.spawn(t.allocator, t.io, .{ .argv = &.{path} }));
+    try t.expectError(error.UnsupportedStream, p.Child.spawn(t.allocator, t.io, .{ .argv = &.{fixture}, .stdout = .pipe }));
+    var token: p.Cancellation = .{};
+    token.request();
+    try t.expectError(error.Canceled, p.Child.spawn(t.allocator, t.io, .{ .argv = &.{fixture}, .cancellation = &token }));
 }
