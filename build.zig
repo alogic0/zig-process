@@ -13,6 +13,8 @@ pub fn build(b: *std.Build) void {
         options.addOptionPath("fixture", fixture.getEmittedBin());
         const tests_mod = b.createModule(.{ .root_source_file = b.path("tests/windows.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "process", .module = mod }} });
         tests_mod.addOptions("test_options", options);
+        // Keep native platform failures diagnosable in ReleaseSafe as well.
+        tests_mod.error_tracing = true;
         const tests = b.addTest(.{ .root_module = tests_mod });
         b.step("test", "Run native Windows file-backed process cases").dependOn(&b.addRunArtifact(tests).step);
         b.step("check", "Compile Windows process cases").dependOn(&tests.step);
