@@ -5,8 +5,21 @@ pub fn build(b: *std.Build) void {
         @panic("zig-process requires Zig 0.17.0");
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
-    if (target.result.os.tag != .linux) @panic("zig-process currently supports Linux only");
+    if (target.result.os.tag != .linux and target.result.os.tag != .windows) @panic("zig-process supports Linux and Windows");
     const mod = b.addModule("process", .{ .root_source_file = b.path("src/root.zig"), .target = target, .optimize = optimize });
+    if (target.result.os.tag == .windows) {
+        const fixture = b.addExecutable(.{ .name = "process-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/windows_fixture.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "process", .module = mod }} }) });
+        const options = b.addOptions();
+        options.addOptionPath("fixture", fixture.getEmittedBin());
+        const tests_mod = b.createModule(.{ .root_source_file = b.path("tests/windows.zig"), .target = target, .optimize = optimize, .imports = &.{.{ .name = "process", .module = mod }} });
+        tests_mod.addOptions("test_options", options);
+        // Keep native platform failures diagnosable in ReleaseSafe as well.
+        tests_mod.error_tracing = true;
+        const tests = b.addTest(.{ .root_module = tests_mod });
+        b.step("test", "Run native Windows file-backed process cases").dependOn(&b.addRunArtifact(tests).step);
+        b.step("check", "Compile Windows process cases").dependOn(&tests.step);
+        return;
+    }
     const fixture = b.addExecutable(.{ .name = "process-fixture", .root_module = b.createModule(.{ .root_source_file = b.path("tests/fixture.zig"), .target = target, .optimize = optimize }) });
     fixture.root_module.addImport("process", mod);
     const options = b.addOptions();

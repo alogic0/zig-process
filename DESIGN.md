@@ -14,6 +14,24 @@ CURRENT_STATUS.md, Debug/ReleaseSafe checks, and committed standalone sources.
 
 ## Public layers
 
+Version 0.6 adds a bounded Windows `Child` backend for file-backed consumer
+commands. It does not port the Linux capture loop or interactive pipe adapters.
+The backend creates a suspended leader, assigns it to a private Job Object with
+KILL_ON_JOB_CLOSE and no breakaway, then resumes. An explicit handle inheritance
+list and DuplicateHandle preserve borrowed file cursors without leaking other
+inheritable handles. Observation uses the process handle without closing it;
+finish enumerates remaining job members in fixed-size batches, checks
+membership on each opened process handle, terminates and joins that handle,
+then re-queries the job. TerminateJobObject is a final containment safeguard,
+not a completion barrier: accounting may reach zero before handles signal. No process-wide policy, PID-tree walk or taskkill is used.
+
+Windows stop is immediate forced termination (the shared grace argument is
+ignored), and launch strings must be valid UTF-8. Search uses the requested
+parent/child PATH with semicolon separators and no missing-PATH fallback.
+Only executable images are launched; shell scripts need an explicit shell.
+The Windows README section records these platform differences. Native Windows
+CI is required; Linux cross-compilation and Wine execution are supplemental.
+
 1. `Child`: launch with explicit argv, cwd, environment, executable lookup and
    stream redirection; observe exit without consuming it; signal, wait, stop,
    and destroy the exact owned child. A borrowed pidfd supports external poll loops.

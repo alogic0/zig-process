@@ -1,5 +1,44 @@
 # Current delivery
 
+## v0.6.0 Windows file-backed Child, October 30, 2026
+
+HL2's interpreter removal needs native Windows command deadlines and reliable
+descendant cleanup. Added an upstream Windows Child backend, preserving the
+Linux capture/pipe implementation. Supported streams are ignore, inherit and
+borrowed files; interactive pipes fail explicitly before launch. Job ownership
+is established while the process is suspended. File duplicates share cursors,
+and only explicitly selected standard handles are inherited.
+
+Nine acceptance cases cover merged binary output/nonzero exit, timeout and
+cancellation retaining ownership, leader observation and descendant cleanup,
+cleanup without disturbing an independent owner, Unicode cwd/environment and
+literal CRT arguments, failed-launch handle cleanup, and explicit parent/child
+PATH lookup. A 70-descendant case exercises cleanup across query batches;
+64 rapid natural exits exercise termination racing completion. CI adds native Windows Debug and ReleaseSafe runs. Cross builds
+and Wine runs are supplemental, not native Windows qualification.
+
+Linux Debug and ReleaseSafe `zig build test check --summary all`: 30/30 tests
+and 11/11 steps in both profiles. Initial native run [41131100060](https://github.com/alogic0/zig-process/actions/runs/41131100060)
+found a completion-barrier race and an unmapped executable-format error.
+Windows can remove terminated members from job accounting before their process
+handles become signaled. Cleanup now enumerates and joins verified job-member
+handles before the job-wide containment safeguard. The original immediate
+handle-signaling assertions are unchanged. Later native runs exposed lazy
+handle initialization in the measurement control and ACCESS_DENIED while an
+already-terminating process had not yet become signaled. The handle control now
+warms the identical failure paths before measuring another 20 repetitions,
+with no tolerance for growth. Cleanup waits for concurrent terminal transitions
+on handles that already have PROCESS_TERMINATE rights.
+
+[Native CI 41134813934](https://github.com/alogic0/zig-process/actions/runs/41134813934)
+qualifies implementation `f5b60decb7c4cfc4668f410242ee0ce915e22ed1`:
+Windows Debug and ReleaseSafe each pass all 9 cases; Linux Debug and ReleaseSafe
+pass the existing 30 cases, examples and package consumer. Direct Wine execution
+also passes 9/9 in both profiles. Local Linux `test check` executed 30/30 in
+both profiles (the implementation commit body incorrectly described these local
+runs as cached). Earlier native failures remain visible in CI history.
+Consumer snapshot refresh and integration checks remain separate.
+
 ## v0.5.1 unlimited capture compatibility, October 20, 2026
 
 HL2 binding generation sets a stdout limit but inherits Zig 0.17.0's unlimited

@@ -51,3 +51,25 @@ jobs:
       - name: Test package consumer
         working-directory: tests/package
         run: zig build test -Doptimize=${{ matrix.optimize }} --summary all
+
+  windows:
+    name: Windows file-backed Child (${{ matrix.optimize }})
+    runs-on: windows-2022
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        optimize: [Debug, ReleaseSafe]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: '0.17.0'
+          cache-key: windows-${{ matrix.optimize }}
+      - name: Run native file-backed process fixtures
+        shell: pwsh
+        run: |
+          zig build test check -Doptimize=${{ matrix.optimize }} --summary all
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

@@ -1,7 +1,8 @@
 # zig-process
 
-Owned Linux child processes and bounded command capture for Zig **0.17.0**.
-Standalone package, version 0.5.1, with no external dependencies.
+Owned child processes for Zig **0.17.0**, with Linux command capture and
+Windows file-backed execution. Standalone package, version 0.6.0, with no
+external dependencies.
 
 Licensed under the [MIT License](LICENSE).
 
@@ -28,6 +29,41 @@ started. Optional `-Dtest-filter=substring` selects matching tests.
 GitHub Actions runs the library tests, examples and package consumer on Linux
 in Debug and ReleaseSafe using the compiler pinned in `.zigversion`. The
 workflow also checks Zig formatting and can be run manually.
+
+## Windows file-backed commands
+
+Windows supports `Child` with `.ignore`, `.inherit` and borrowed `.file`
+streams on `std.Io.Threaded`. `zig build test check` runs its native fixtures;
+CI runs them on windows-2022 in Debug and ReleaseSafe. Capture (`run` and
+`runReport`) and interactive pipe adapters still require Linux; `.pipe` on a
+Windows Child returns `UnsupportedStream` before launching anything.
+
+An owned child starts suspended, joins a private kill-on-close Job Object and
+then resumes. Descendants inherit job membership with breakaway disabled.
+`poll` only observes; `finish` preserves the leader's exit status, terminates
+remaining descendants by enumerating job members, checking membership on
+opened process handles, terminating and waiting on those handles, then
+re-querying until empty. Job accounting alone is not a completion barrier. `wait` timeout or
+cancellation leaves ownership intact. `stop` force-terminates immediately:
+Windows has no POSIX TERM grace contract, so its `grace_ms` argument is ignored.
+`deinit` is idempotent, uncancelable cleanup. `.child_only` intentionally owns
+only the leader. Nested jobs must be permitted by the enclosing Windows job;
+assignment failure kills the suspended leader and returns an error.
+
+Arguments, cwd and environment use UTF-8 converted to UTF-16. Arguments follow
+CRT quoting; no shell is inserted. Lookup accepts `.exe` (adding that suffix
+when absent), resolves relative paths in the child's cwd, and searches PATH
+only when requested. Child PATH uses semicolon-separated entries, including
+empty entries for cwd; parent PATH skips empty entries. An absent PATH has no
+fallback on Windows. `.cmd`/`.bat` require an explicitly launched shell.
+Borrowed file handles are duplicated, preserving their shared cursor, and an
+explicit inheritance list excludes unrelated handles. Raw log bytes are
+unchanged. Exit codes above 255 are retained in `Term.unknown`.
+
+The normal-operation deadline includes launch preparation and execution.
+Blocking OS launch/cleanup calls cannot provide an unconditional wall-clock
+bound. As on Linux, the owner and its borrowed polling handle must not be
+copied, closed or concurrently manipulated by other code.
 
 ## Use as a package
 
