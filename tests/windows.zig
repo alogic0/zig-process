@@ -167,3 +167,38 @@ test "PATH lookup is explicit and selects the requested environment" {
     defer parent.deinit();
     try t.expectEqual(@as(u8, 7), (try parent.wait(10_000)).exited);
 }
+
+test "cleanup joins more descendants than fit in one job query batch" {
+    var tmp = t.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(t.io, ".", t.allocator);
+    defer t.allocator.free(root);
+    var child = try p.Child.spawn(t.allocator, t.io, .{ .argv = &.{ fixture, "many", root } });
+    defer child.deinit();
+    const end = std.Io.Clock.awake.now(t.io).addDuration(.fromSeconds(30));
+    const bytes = while (true) {
+        const data = tmp.dir.readFileAlloc(t.io, "many.json", t.allocator, .limited(4096)) catch |err| switch (err) {
+            error.FileNotFound => {
+                if (std.Io.Clock.awake.now(t.io).nanoseconds >= end.nanoseconds) return error.DescendantsDidNotStart;
+                try t.io.sleep(.fromMilliseconds(5), .awake);
+                continue;
+            },
+            else => return err,
+        };
+        break data;
+    };
+    defer t.allocator.free(bytes);
+    const pids = try std.json.parseFromSlice([70]u32, t.allocator, bytes, .{});
+    defer pids.deinit();
+    var handles: [70]w.HANDLE = undefined;
+    var count: usize = 0;
+    defer for (handles[0..count]) |handle| {
+        _ = CloseHandle(handle);
+    };
+    for (pids.value) |pid| {
+        handles[count] = OpenProcess(0x00100000, 0, pid) orelse return error.OpenDescendantFailed;
+        count += 1;
+    }
+    _ = try child.stop(0);
+    for (handles) |handle| try t.expectEqual(@as(u32, 0), WaitForSingleObject(handle, 0));
+}

@@ -20,8 +20,10 @@ The backend creates a suspended leader, assigns it to a private Job Object with
 KILL_ON_JOB_CLOSE and no breakaway, then resumes. An explicit handle inheritance
 list and DuplicateHandle preserve borrowed file cursors without leaking other
 inheritable handles. Observation uses the process handle without closing it;
-finish kills remaining job members and waits for zero active processes before
-closing ownership. No process-wide policy, PID-tree walk or taskkill is used.
+finish enumerates remaining job members in fixed-size batches, checks
+membership on each opened process handle, terminates and joins that handle,
+then re-queries the job. TerminateJobObject is a final containment safeguard,
+not a completion barrier: accounting may reach zero before handles signal. No process-wide policy, PID-tree walk or taskkill is used.
 
 Windows stop is immediate forced termination (the shared grace argument is
 ignored), and launch strings must be valid UTF-8. Search uses the requested

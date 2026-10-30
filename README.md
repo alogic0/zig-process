@@ -41,7 +41,9 @@ Windows Child returns `UnsupportedStream` before launching anything.
 An owned child starts suspended, joins a private kill-on-close Job Object and
 then resumes. Descendants inherit job membership with breakaway disabled.
 `poll` only observes; `finish` preserves the leader's exit status, terminates
-remaining descendants and waits for the job to become empty. `wait` timeout or
+remaining descendants by enumerating job members, checking membership on
+opened process handles, terminating and waiting on those handles, then
+re-querying until empty. Job accounting alone is not a completion barrier. `wait` timeout or
 cancellation leaves ownership intact. `stop` force-terminates immediately:
 Windows has no POSIX TERM grace contract, so its `grace_ms` argument is ignored.
 `deinit` is idempotent, uncancelable cleanup. `.child_only` intentionally owns

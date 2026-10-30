@@ -9,16 +9,22 @@ borrowed files; interactive pipes fail explicitly before launch. Job ownership
 is established while the process is suspended. File duplicates share cursors,
 and only explicitly selected standard handles are inherited.
 
-Seven acceptance cases cover merged binary output/nonzero exit, timeout and
+Eight acceptance cases cover merged binary output/nonzero exit, timeout and
 cancellation retaining ownership, leader observation and descendant cleanup,
 cleanup without disturbing an independent owner, Unicode cwd/environment and
 literal CRT arguments, failed-launch handle cleanup, and explicit parent/child
-PATH lookup. CI adds native Windows Debug and ReleaseSafe runs. Cross builds
+PATH lookup. A 70-descendant case exercises cleanup across query batches. CI adds native Windows Debug and ReleaseSafe runs. Cross builds
 and Wine runs are supplemental, not native Windows qualification.
 
 Linux Debug and ReleaseSafe `zig build test check --summary all`: 30/30 tests
-and 11/11 steps in both profiles. Windows native CI evidence is recorded after
-the committed implementation runs. Consumer snapshot refresh remains separate.
+and 11/11 steps in both profiles. Initial native run [41131100060](https://github.com/alogic0/zig-process/actions/runs/41131100060)
+found a completion-barrier race and an unmapped executable-format error.
+Windows can remove terminated members from job accounting before their process
+handles become signaled. Cleanup now enumerates and joins verified job-member
+handles before the job-wide containment safeguard. The original immediate
+handle-signaling assertions are unchanged. Debug/ReleaseSafe cross-builds and
+Wine execution pass all eight cases; corrected native CI is required before
+consumer adoption. Consumer snapshot refresh remains separate.
 
 ## v0.5.1 unlimited capture compatibility, October 20, 2026
 

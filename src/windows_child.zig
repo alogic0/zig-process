@@ -58,6 +58,8 @@ extern "kernel32" fn WaitForSingleObject(w.HANDLE, u32) callconv(.winapi) u32;
 extern "kernel32" fn ResumeThread(w.HANDLE) callconv(.winapi) u32;
 extern "kernel32" fn CloseHandle(w.HANDLE) callconv(.winapi) i32;
 extern "kernel32" fn GetCurrentProcess() callconv(.winapi) w.HANDLE;
+extern "kernel32" fn OpenProcess(u32, i32, u32) callconv(.winapi) ?w.HANDLE;
+extern "kernel32" fn IsProcessInJob(w.HANDLE, w.HANDLE, *i32) callconv(.winapi) i32;
 extern "kernel32" fn DuplicateHandle(w.HANDLE, w.HANDLE, w.HANDLE, *w.HANDLE, u32, i32, u32) callconv(.winapi) i32;
 extern "kernel32" fn CreateFileW([*:0]const u16, u32, u32, ?*anyopaque, u32, u32, ?w.HANDLE) callconv(.winapi) w.HANDLE;
 extern "kernel32" fn InitializeProcThreadAttributeList(?*anyopaque, u32, u32, *usize) callconv(.winapi) i32;
@@ -69,7 +71,7 @@ fn fail() anyerror {
     return switch (w.GetLastError()) {
         .FILE_NOT_FOUND, .PATH_NOT_FOUND => error.FileNotFound,
         .ACCESS_DENIED => error.AccessDenied,
-        .BAD_EXE_FORMAT => error.InvalidExe,
+        .BAD_FORMAT, .INVALID_EXE_SIGNATURE, .EXE_MARKED_INVALID, .BAD_EXE_FORMAT, .EXE_MACHINE_TYPE_MISMATCH => error.InvalidExe,
         .NOT_ENOUGH_MEMORY, .OUTOFMEMORY => error.OutOfMemory,
         else => error.WindowsProcessFailed,
     };
@@ -264,14 +266,38 @@ pub fn pollUntil(self: *Self, end: std.Io.Timestamp, token: ?*const T.Cancellati
 }
 fn terminate(self: *Self) !void {
     if (self.assigned_to_job) {
+        // TerminateJobObject removes members from accounting before their
+        // handles become signaled. Retain and join members before requesting
+        // job-wide termination; never treat ActiveProcesses == 0 as a join.
+        // Fixed-size batches keep cleanup allocation-free. Re-querying also
+        // covers children created while an earlier batch was being stopped.
+        const Pids = extern struct { assigned: u32, listed: u32, ids: [64]usize };
+        while (true) {
+            var pids: Pids = std.mem.zeroes(Pids);
+            if (QueryInformationJobObject(self.job.?, 3, &pids, @sizeOf(Pids), null) == 0 and w.GetLastError() != .MORE_DATA) return fail();
+            if (pids.listed == 0) break;
+            for (pids.ids[0..@min(pids.listed, pids.ids.len)]) |pid| {
+                const handle = OpenProcess(0x00100000 | 0x0400 | 1, 0, @intCast(pid)) orelse {
+                    if (w.GetLastError() == .INVALID_PARAMETER) continue; // Already gone.
+                    return fail();
+                };
+                defer _ = CloseHandle(handle);
+                var member: i32 = 0;
+                if (IsProcessInJob(handle, self.job.?, &member) == 0) return fail();
+                if (member == 0) continue; // PID was reused; never touch another owner.
+                try terminateHandle(handle);
+                if (WaitForSingleObject(handle, std.math.maxInt(u32)) != 0) return fail();
+            }
+        }
         if (TerminateJobObject(self.job.?, 1) == 0) return fail();
         return;
     }
-    if (self.handle) |handle| {
-        if (WaitForSingleObject(handle, 0) == 258 and TerminateProcess(handle, 1) == 0) {
-            const err = fail();
-            if (WaitForSingleObject(handle, 0) != 0) return err;
-        }
+    if (self.handle) |handle| try terminateHandle(handle);
+}
+fn terminateHandle(handle: w.HANDLE) !void {
+    if (WaitForSingleObject(handle, 0) == 258 and TerminateProcess(handle, 1) == 0) {
+        const err = fail();
+        if (WaitForSingleObject(handle, 0) != 0) return err;
     }
 }
 fn join(self: *Self) !Term {

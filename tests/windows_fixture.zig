@@ -39,5 +39,23 @@ pub fn main(init: std.process.Init) !void {
         try dir.rename("ready.tmp", dir, "ready", io);
         if (std.mem.eql(u8, args[3], "exit")) std.process.exit(7);
         try io.sleep(.fromSeconds(60), .awake);
+    } else if (std.mem.eql(u8, args[1], "many")) {
+        const exe = try std.process.executablePathAlloc(io, a);
+        var pids: [70]u32 = undefined;
+        const Win = struct {
+            extern "kernel32" fn GetProcessId(std.os.windows.HANDLE) callconv(.winapi) u32;
+            extern "kernel32" fn CloseHandle(std.os.windows.HANDLE) callconv(.winapi) i32;
+        };
+        for (&pids) |*pid| {
+            const child = try std.process.spawn(io, .{ .argv = &.{ exe, "sleep" }, .stdin = .ignore, .stdout = .ignore, .stderr = .ignore });
+            pid.* = Win.GetProcessId(child.id.?);
+            _ = Win.CloseHandle(child.id.?);
+            _ = Win.CloseHandle(child.thread_handle);
+        }
+        var dir = try std.Io.Dir.cwd().openDir(io, args[2], .{});
+        defer dir.close(io);
+        try dir.writeFile(io, .{ .sub_path = "many.tmp", .data = try std.json.Stringify.valueAlloc(a, pids, .{}) });
+        try dir.rename("many.tmp", dir, "many.json", io);
+        try io.sleep(.fromSeconds(60), .awake);
     } else return error.UnknownFixture;
 }
