@@ -1,5 +1,25 @@
 # Current delivery
 
+## v0.6.0 Windows file-backed Child, October 30, 2026
+
+HL2's interpreter removal needs native Windows command deadlines and reliable
+descendant cleanup. Added an upstream Windows Child backend, preserving the
+Linux capture/pipe implementation. Supported streams are ignore, inherit and
+borrowed files; interactive pipes fail explicitly before launch. Job ownership
+is established while the process is suspended. File duplicates share cursors,
+and only explicitly selected standard handles are inherited.
+
+Seven acceptance cases cover merged binary output/nonzero exit, timeout and
+cancellation retaining ownership, leader observation and descendant cleanup,
+cleanup without disturbing an independent owner, Unicode cwd/environment and
+literal CRT arguments, failed-launch handle cleanup, and explicit parent/child
+PATH lookup. CI adds native Windows Debug and ReleaseSafe runs. Cross builds
+and Wine runs are supplemental, not native Windows qualification.
+
+Linux Debug and ReleaseSafe `zig build test check --summary all`: 30/30 tests
+and 11/11 steps in both profiles. Windows native CI evidence is recorded after
+the committed implementation runs. Consumer snapshot refresh remains separate.
+
 ## v0.5.1 unlimited capture compatibility, October 20, 2026
 
 HL2 binding generation sets a stdout limit but inherits Zig 0.17.0's unlimited

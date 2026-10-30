@@ -1,5 +1,7 @@
-//! Explicit Linux process ownership for Zig 0.17.0. No application dependencies.
-pub const Child = @import("child.zig");
+//! Explicit process ownership for Zig 0.17.0. No application dependencies.
+//! Windows currently supports Child with inherited, ignored or file streams.
+//! Captures and interactive pipe adapters require Linux.
+pub const Child = if (@import("builtin").os.tag == .windows) @import("windows_child.zig") else @import("child.zig");
 pub const PipeReader = @import("pipe.zig").Reader;
 pub const PipeWriter = @import("pipe.zig").Writer;
 pub const SpawnOptions = @import("types.zig").SpawnOptions;
