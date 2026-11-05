@@ -1,7 +1,7 @@
 # zig-process
 
 Owned child processes for Zig **0.17.0**, with Linux command capture and
-Windows file-backed execution. Standalone package, version 0.6.0, with no
+Windows file-backed execution. Standalone package, version 0.6.1, with no
 external dependencies.
 
 Licensed under the [MIT License](LICENSE).
@@ -9,6 +9,10 @@ Licensed under the [MIT License](LICENSE).
 Designed from Zeta, zg-backend, Paneva and HL2 host-tool requirements.
 See [DESIGN.md](DESIGN.md) for ownership decisions, source revisions and consumer
 boundaries, and [CURRENT_STATUS.md](CURRENT_STATUS.md) for verification scope.
+
+Linux waits use pidfd readiness under the original deadline. Exit wakes the
+kernel wait immediately; bounded 10 ms intervals retain token and std.Io
+cancellation checks. See the completed [readiness-wait plan](docs/plans/2026-11-05-readiness-waits.md).
 
 ## Build and check
 

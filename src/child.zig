@@ -132,7 +132,7 @@ pub fn spawnUntil(a: std.mem.Allocator, io: std.Io, options: T.SpawnOptions, end
                 if (count == bytes.len) return errnoError(@fromBackingInt(std.mem.readInt(u16, &bytes, .little)));
             },
             .INTR => continue,
-            .AGAIN => try io.sleep(.fromMilliseconds(1), .awake),
+            .AGAIN => try waitReadable(io, errors[0], end, options.cancellation),
             else => |err| return errnoError(err),
         }
     }
@@ -179,7 +179,23 @@ pub fn pollUntil(self: *Self, end: std.Io.Timestamp, cancellation: ?*const T.Can
         try T.check(self.io, cancellation);
         if (try self.poll()) |term| return term;
         if (T.expired(self.io, end)) return null;
-        try self.io.sleep(.fromMilliseconds(1), .awake);
+        try waitReadable(self.io, self.pidfd orelse return error.Closed, end, cancellation);
+    }
+}
+
+/// Readiness wakes immediately on exit/exec acknowledgement. Bounded ppoll
+/// intervals are cancellation points for tokens and Threaded tasks even when
+/// cancellation does not interrupt this raw syscall. Never consume the fd.
+fn waitReadable(io: std.Io, fd: linux.fd_t, end: std.Io.Timestamp, cancellation: ?*const T.Cancellation) !void {
+    try T.check(io, cancellation);
+    const remaining = end.nanoseconds -| std.Io.Clock.awake.now(io).nanoseconds;
+    if (remaining <= 0) return;
+    var timeout: linux.timespec = .{ .sec = 0, .nsec = @intCast(@min(remaining, 10 * std.time.ns_per_ms)) };
+    var fds = [_]linux.pollfd{.{ .fd = fd, .events = linux.POLL.IN, .revents = 0 }};
+    switch (linux.errno(linux.ppoll(&fds, fds.len, &timeout, null))) {
+        .SUCCESS => if (fds[0].revents & (linux.POLL.ERR | linux.POLL.NVAL) != 0) return error.ProcessPollFailed,
+        .INTR => {}, // Caller rechecks cancellation, status and original deadline.
+        else => |err| return errnoError(err),
     }
 }
 
@@ -223,7 +239,7 @@ pub fn stop(self: *Self, grace_ms: u32) !Term {
     if (try self.poll() == null) {
         try self.signal(.TERM);
         const end = T.deadline(self.io, grace_ms);
-        while (try self.poll() == null and !T.expired(self.io, end)) try self.io.sleep(.fromMilliseconds(1), .awake);
+        _ = try self.pollUntil(end, null);
     }
     try self.signal(.KILL);
     return self.reap();

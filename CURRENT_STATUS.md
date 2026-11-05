@@ -1,5 +1,24 @@
 # Current delivery
 
+## v0.6.1 Linux readiness waits, November 5, 2026
+
+Linux child observation, exec acknowledgement and stop grace now use bounded
+ppoll readiness waits. Exit does not wait for a polling sleep to finish. The
+original absolute deadline bounds every wait, including EINTR retries; 10 ms
+intervals ensure atomic-token and std.Io cancellation remain observable without
+requiring a signal or helper thread. Ownership and cancellation/status/deadline
+precedence are unchanged. Capture and Windows implementations are unchanged.
+
+Added a held-child regression exercising token cancellation after waiting begins,
+std.Io cancellation, retained descriptors, timeout recovery and eventual reaping.
+Native `zig build test check` passes all 31 cases (27 lifecycle, 4 capture-failure)
+in Debug and ReleaseSafe. The final Debug rerun reused the already-passing four
+capture-failure cases; ReleaseSafe executed all 31. Formatting and diff whitespace
+checks pass. One initial new-test failure was an EOF-only release of a fixture
+that requires input; the test now sends its release bytes before closing stdin.
+No Windows CI or performance qualification was run for this Linux-only change.
+See [the completed plan](docs/plans/2026-11-05-readiness-waits.md).
+
 ## v0.6.0 Windows file-backed Child, October 30, 2026
 
 HL2's interpreter removal needs native Windows command deadlines and reliable

@@ -351,6 +351,34 @@ test "bounded observation and wait cancellation preserve ownership" {
     try t.expectEqual(linux.E.SRCH, linux.errno(linux.kill(pid, @fromBackingInt(0))));
 }
 
+test "readiness waits honor token changes and Io cancellation after waiting begins" {
+    var child = try p.Child.spawn(t.allocator, t.io, .{ .argv = &.{ fixture, "stdin" }, .stdin = .pipe });
+    defer child.deinit();
+    const pid = child.pid.?;
+    const fd = child.pollHandle().?;
+    const end = std.Io.Clock.awake.now(t.io).addDuration(.fromSeconds(3));
+    var flag: p.Cancellation = .{};
+    var waiter = try t.io.concurrent(p.Child.waitUntil, .{ &child, end, @as(?*const p.Cancellation, &flag) });
+    defer _ = waiter.cancel(t.io) catch {};
+    try t.io.sleep(.fromMilliseconds(30), .awake);
+    flag.request();
+    try t.expectError(error.Canceled, waiter.await(t.io));
+    try t.expectEqual(pid, child.pid.?);
+    try t.expectEqual(fd, child.pollHandle().?);
+
+    var observer = try t.io.concurrent(p.Child.pollUntil, .{ &child, end, @as(?*const p.Cancellation, null) });
+    defer _ = observer.cancel(t.io) catch {};
+    try t.io.sleep(.fromMilliseconds(30), .awake);
+    try t.expectError(error.Canceled, observer.cancel(t.io));
+    try t.expectEqual(pid, child.pid.?);
+    try t.expectEqual(null, try child.poll());
+    try t.expectError(error.Timeout, child.wait(10));
+    try child.stdin.?.writeStreamingAll(t.io, "released");
+    child.closeStdin();
+    try t.expect((try child.waitUntil(end, null)).success());
+    try t.expect(child.pid == null and child.pollHandle() == null);
+}
+
 test "bounded observation reports closed owners and leaves siblings waitable" {
     var closed: p.Child = .{ .io = t.io, .group = .owned };
     defer closed.deinit();

@@ -174,7 +174,13 @@ immediate/expired deadline. Status is then checked before expiration, so an
 already-observable exit is returned even with a zero or expired budget.
 Token and std.Io cancellation return Canceled with ownership intact. Tokens
 are per-operation borrows; no pointer is retained by Child after spawn or wait.
-Polling retains the existing one-millisecond sleep between status checks.
+Since v0.6.1, Linux observation waits for pidfd readiness using ppoll instead of
+sleeping between status checks. Each kernel wait is bounded by the remaining
+deadline and a 10 ms cancellation-check interval. Child exit wakes it immediately;
+token and std.Io cancellation are observed within that interval plus scheduling
+delay even when they do not interrupt the syscall. EINTR retries against the same
+absolute deadline. Exec acknowledgement and stop grace reuse this mechanism.
+No helper thread, allocation, signal handler or new process-wide policy is added.
 
 `waitUntil(deadline, token)` composes observation with finish. A null observation
 becomes Timeout; successful observation finishes the group/exact child.
